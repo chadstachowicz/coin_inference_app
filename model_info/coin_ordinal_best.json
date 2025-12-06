@@ -1,0 +1,27 @@
+{
+    "name": "coin_ordinal_best",
+    "description": "Ordinal regression model for coin grading",
+    "accuracy": "See training logs",
+    "endpoint": "http://127.0.0.1:8000/predict",
+    "input_neurons": {
+        "obverse": "file",
+        "reverse": "file",
+        "company": "optional"
+    },
+    "output_neuron": "Sheldon grade (1-70)",
+    "valid_grades": [
+        "FR02", "AG03", "G04", "G06", "VG08", "VG10", "F12", "F15",
+        "VF20", "VF25", "VF30", "VF35", "XF40", "XF45",
+        "AU50", "AU53", "AU55", "AU58",
+        "MS60", "MS61", "MS62", "MS63", "MS64", "MS65", "MS66", "MS67", "MS68"
+    ],
+    "keywords": [
+        "coin grading",
+        "numismatics",
+        "Sheldon scale",
+        "PCGS",
+        "NGC"
+    ],
+    "encoding": "step_based"
+}
+
