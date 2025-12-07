@@ -193,7 +193,7 @@ class CoinGrader:
         print(f"   Company conditioning: {self.use_company}")
     
     def preprocess_coin_image(self, pil_image, output_size=512):
-        """Hough circle detection and centering on white background."""
+        """Hough circle detection, circular mask, and centering on white background."""
         import numpy as np
         import cv2
         from PIL import Image
@@ -227,20 +227,33 @@ class CoinGrader:
             circles = np.uint16(np.around(circles))
             cx, cy, radius = circles[0][0]
         
+        # Create circular mask on original image first
+        mask_radius = int(radius * 1.02)  # Slight padding
+        mask_original = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+        cv2.circle(mask_original, (int(cx), int(cy)), mask_radius, 255, -1)
+        
+        # Feather mask edges
+        mask_original = cv2.GaussianBlur(mask_original, (7, 7), 0)
+        
+        # Blend coin onto white using mask
+        white_original = np.ones_like(img_bgr) * 255
+        mask_3ch = cv2.cvtColor(mask_original, cv2.COLOR_GRAY2BGR).astype(float) / 255.0
+        blended = (img_bgr.astype(float) * mask_3ch + white_original.astype(float) * (1 - mask_3ch)).astype(np.uint8)
+        
+        # Crop the masked region
         padding = int(radius * 0.05)
         crop_radius = radius + padding
-        
         x1 = max(0, int(cx - crop_radius))
         y1 = max(0, int(cy - crop_radius))
         x2 = min(width, int(cx + crop_radius))
         y2 = min(height, int(cy + crop_radius))
         
-        cropped = img_bgr[y1:y2, x1:x2]
+        cropped = blended[y1:y2, x1:x2]
         
         white_bg = np.ones((output_size, output_size, 3), dtype=np.uint8) * 255
         
         crop_h, crop_w = cropped.shape[:2]
-        scale = (output_size * 0.95) / max(crop_h, crop_w)
+        scale = (output_size * 0.92) / max(crop_h, crop_w)
         new_w = int(crop_w * scale)
         new_h = int(crop_h * scale)
         
@@ -395,6 +408,232 @@ async def predict(
     
     result = grader.predict.remote(obverse_bytes, reverse_bytes, company)
     return result
+
+
+def detect_coins_contour_modal(img, cv2, np):
+    """Detect coins using contour detection - more robust than Hough circles."""
+    height, width = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 31, 10
+    )
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=3)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    coin_candidates = []
+    min_area = (min(height, width) * 0.1) ** 2
+    max_area = (min(height, width) * 0.6) ** 2
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area > max_area:
+            continue
+        
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            continue
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        
+        if circularity < 0.5:
+            continue
+        
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        coin_candidates.append({
+            'cx': int(cx), 'cy': int(cy), 'radius': int(radius),
+            'area': area, 'circularity': circularity
+        })
+    
+    return coin_candidates
+
+
+def detect_coins_color_modal(img, cv2, np):
+    """Detect coins using color segmentation for metallic objects."""
+    height, width = img.shape[:2]
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    mask_gold = cv2.inRange(hsv, (5, 30, 80), (35, 255, 255))
+    mask_silver = cv2.inRange(hsv, (0, 0, 100), (180, 50, 255))
+    mask_brown = cv2.inRange(hsv, (0, 20, 50), (20, 150, 200))
+    
+    mask = cv2.bitwise_or(mask_gold, mask_silver)
+    mask = cv2.bitwise_or(mask, mask_brown)
+    
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+    
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    coin_candidates = []
+    min_area = (min(height, width) * 0.1) ** 2
+    max_area = (min(height, width) * 0.6) ** 2
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < min_area or area > max_area:
+            continue
+        
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter == 0:
+            continue
+        circularity = 4 * np.pi * area / (perimeter ** 2)
+        
+        if circularity < 0.4:
+            continue
+        
+        (cx, cy), radius = cv2.minEnclosingCircle(contour)
+        coin_candidates.append({
+            'cx': int(cx), 'cy': int(cy), 'radius': int(radius),
+            'area': area, 'circularity': circularity
+        })
+    
+    return coin_candidates
+
+
+def split_image_simple_modal(img):
+    """Simple fallback: split image into left and right halves."""
+    height, width = img.shape[:2]
+    
+    margin_x = int(width * 0.02)
+    margin_y = int(height * 0.05)
+    half_width = width // 2
+    
+    left_cx = (margin_x + half_width - margin_x) // 2
+    right_cx = half_width + (margin_x + half_width - margin_x) // 2
+    cy = height // 2
+    radius = min(half_width - 2 * margin_x, height - 2 * margin_y) // 2
+    
+    return [
+        {'cx': left_cx, 'cy': cy, 'radius': radius, 'area': 0, 'circularity': 1.0},
+        {'cx': right_cx, 'cy': cy, 'radius': radius, 'area': 0, 'circularity': 1.0}
+    ]
+
+
+@web_app.post("/split-combined")
+async def split_combined(image: UploadFile = File(...)):
+    """
+    Split a combined TrueView/slab image into obverse and reverse.
+    
+    Uses multiple detection strategies:
+    1. Contour detection with adaptive thresholding
+    2. Color segmentation for metallic objects
+    3. Simple geometric split (fallback)
+    """
+    import cv2
+    import numpy as np
+    import base64
+    
+    image_bytes = await image.read()
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if img is None:
+        raise HTTPException(status_code=400, detail="Could not read image")
+    
+    height, width = img.shape[:2]
+    
+    # Try multiple detection methods
+    coins = []
+    detection_method = "none"
+    
+    # Method 1: Contour detection
+    coins = detect_coins_contour_modal(img, cv2, np)
+    if len(coins) >= 2:
+        detection_method = "contour"
+    
+    # Method 2: Color segmentation
+    if len(coins) < 2:
+        color_coins = detect_coins_color_modal(img, cv2, np)
+        if len(color_coins) >= 2:
+            coins = color_coins
+            detection_method = "color"
+        elif len(color_coins) > len(coins):
+            coins = color_coins
+    
+    # Method 3: Simple geometric split (fallback)
+    if len(coins) < 2:
+        coins = split_image_simple_modal(img)
+        detection_method = "geometric"
+    
+    # Sort by x coordinate
+    coins = sorted(coins, key=lambda c: c['cx'])
+    
+    if len(coins) > 2 and detection_method != "geometric":
+        coins = sorted(coins, key=lambda c: c['area'], reverse=True)[:2]
+        coins = sorted(coins, key=lambda c: c['cx'])
+    
+    obverse_coin = coins[0]
+    reverse_coin = coins[1] if len(coins) > 1 else coins[0]
+    
+    def extract_coin(coin_info, img, output_size=512):
+        cx, cy, r = coin_info['cx'], coin_info['cy'], coin_info['radius']
+        
+        # Add small padding to radius
+        padding = int(r * 0.05)
+        mask_r = r + padding
+        
+        # Create circular mask on original image
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        cv2.circle(mask, (cx, cy), mask_r, 255, -1)
+        
+        # Apply slight feathering to mask edges
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        
+        # Create white background same size as original
+        white_img = np.ones_like(img) * 255
+        
+        # Blend coin onto white using mask
+        mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR).astype(float) / 255
+        result = (img.astype(float) * mask_3ch + white_img.astype(float) * (1 - mask_3ch)).astype(np.uint8)
+        
+        # Crop to bounding box of the coin
+        crop_r = mask_r + 10
+        x1 = max(0, cx - crop_r)
+        y1 = max(0, cy - crop_r)
+        x2 = min(img.shape[1], cx + crop_r)
+        y2 = min(img.shape[0], cy + crop_r)
+        
+        cropped = result[y1:y2, x1:x2]
+        white_bg = np.ones((output_size, output_size, 3), dtype=np.uint8) * 255
+        
+        crop_h, crop_w = cropped.shape[:2]
+        if crop_h == 0 or crop_w == 0:
+            return white_bg
+        
+        scale = (output_size * 0.92) / max(crop_h, crop_w)
+        new_w = int(crop_w * scale)
+        new_h = int(crop_h * scale)
+        
+        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        x_offset = (output_size - new_w) // 2
+        y_offset = (output_size - new_h) // 2
+        white_bg[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        return white_bg
+    
+    obverse_img = extract_coin(obverse_coin, img)
+    reverse_img = extract_coin(reverse_coin, img)
+    
+    _, obverse_encoded = cv2.imencode('.jpg', obverse_img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    _, reverse_encoded = cv2.imencode('.jpg', reverse_img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    
+    obverse_b64 = base64.b64encode(obverse_encoded).decode('utf-8')
+    reverse_b64 = base64.b64encode(reverse_encoded).decode('utf-8')
+    
+    return {
+        "obverse": obverse_b64,
+        "reverse": reverse_b64,
+        "detection_method": detection_method,
+        "coins_found": len(coins)
+    }
 
 
 @web_app.get("/companies")

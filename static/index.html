@@ -475,6 +475,208 @@
       color: var(--white);
     }
 
+    /* Upload Mode Toggle */
+    .upload-mode-toggle {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      background: var(--white);
+      padding: 0.5rem;
+      border-radius: 12px;
+      max-width: 400px;
+      margin-left: auto;
+      margin-right: auto;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .mode-btn {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: none;
+      background: transparent;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      color: var(--gray-600);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .mode-btn.active {
+      background: var(--gold-gradient);
+      color: var(--white);
+    }
+
+    .mode-btn:hover:not(.active) {
+      background: var(--gray-100);
+    }
+
+    /* Combined Image Upload */
+    .combined-upload {
+      display: none;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+
+    .combined-upload.visible {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .combined-upload .upload-card {
+      width: 100%;
+      max-width: 700px;
+    }
+
+    .combined-preview {
+      width: 100%;
+      min-height: 250px;
+      aspect-ratio: 2/1;
+      background: var(--gray-100);
+      border-radius: 12px;
+      border: 3px dashed var(--gray-300);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--gray-400);
+      overflow: hidden;
+      position: relative;
+      margin-bottom: 1rem;
+      cursor: pointer;
+    }
+
+    .combined-preview.has-image {
+      border: 3px solid var(--gold-primary);
+    }
+
+    .combined-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+      cursor: pointer;
+    }
+
+    .combined-preview img.visible {
+      display: block;
+    }
+
+    .combined-placeholder {
+      text-align: center;
+    }
+
+    .combined-placeholder i {
+      font-size: 3rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .combined-placeholder p {
+      font-size: 0.9rem;
+    }
+
+    .combined-placeholder.hidden {
+      display: none;
+    }
+
+    .detected-coins {
+      display: none;
+      gap: 2rem;
+      margin-top: 1.5rem;
+      padding: 1rem;
+      background: var(--gray-50);
+      border-radius: 12px;
+    }
+
+    .detected-coins.visible {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .detected-coin {
+      text-align: center;
+    }
+
+    .detected-coin img {
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid var(--gold-primary);
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .detected-coin img:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 15px rgba(212, 168, 75, 0.4);
+    }
+
+    .detected-coin span {
+      display: block;
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+      color: var(--gray-600);
+      font-weight: 600;
+    }
+
+    @media (min-width: 768px) {
+      .detected-coin img {
+        width: 200px;
+        height: 200px;
+      }
+    }
+
+    /* Image Modal */
+    .image-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      z-index: 10001;
+      justify-content: center;
+      align-items: center;
+      padding: 1rem;
+    }
+
+    .image-modal.visible {
+      display: flex;
+    }
+
+    .image-modal img {
+      max-width: 90%;
+      max-height: 90%;
+      border-radius: 8px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .image-modal-close {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      background: var(--white);
+      border: none;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      font-size: 1.5rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--gray-800);
+    }
+
+    .image-modal-close:hover {
+      background: var(--gray-100);
+    }
+
     /* Tips Section */
     .tips-section {
       margin-top: 3rem;
@@ -728,6 +930,12 @@
     <div class="loading-text">Analyzing coin...</div>
   </div>
 
+  <!-- Image Modal (Full View) -->
+  <div class="image-modal" id="imageModal" onclick="closeImageModal()">
+    <button class="image-modal-close" onclick="closeImageModal()">×</button>
+    <img src="" id="imageModalImg" alt="Full view" onclick="event.stopPropagation()">
+  </div>
+
   <!-- Camera Modal -->
   <div class="camera-modal" id="cameraModal">
     <video id="cameraVideo" autoplay playsinline></video>
@@ -771,20 +979,63 @@
 
   <!-- Main Content -->
   <main class="main-content">
+    <!-- Upload Mode Toggle -->
+    <div class="upload-mode-toggle">
+      <button class="mode-btn active" id="modeTwoPhotos" onclick="setUploadMode('two')">
+        <i class="fas fa-clone"></i> Two Photos
+      </button>
+      <button class="mode-btn" id="modeCombined" onclick="setUploadMode('combined')">
+        <i class="fas fa-image"></i> TrueView/Slab
+      </button>
+    </div>
+
     <!-- Steps -->
-    <div class="steps">
+    <div class="steps" id="stepsIndicator">
       <div class="step-dot active" id="step1"></div>
       <div class="step-dot" id="step2"></div>
       <div class="step-dot" id="step3"></div>
     </div>
 
-    <!-- Upload Section -->
-    <div class="upload-section">
+    <!-- Combined Image Upload (TrueView/Slab) -->
+    <div class="combined-upload" id="combinedUpload">
+      <div class="upload-card">
+        <h3><i class="fas fa-expand"></i> Combined Obverse & Reverse Image</h3>
+        <div class="combined-preview" id="combinedPreview">
+          <img src="" id="combinedPreviewImg" alt="Combined" onclick="openImageModal(this.src)">
+          <div class="combined-placeholder" id="combinedPlaceholder">
+            <i class="fas fa-images"></i>
+            <p>Upload a TrueView or slab photo<br><small>Both sides in one image (left = obverse, right = reverse)</small></p>
+          </div>
+        </div>
+        <div class="upload-buttons">
+          <button class="btn btn-primary" onclick="document.getElementById('combinedFile').click()">
+            <i class="fas fa-upload"></i> Upload Combined Image
+          </button>
+        </div>
+        <div class="image-requirements">We'll detect both coins and separate them automatically</div>
+        <input type="file" id="combinedFile" accept="image/*" onchange="handleCombinedFile(this)">
+        
+        <!-- Detected Coins Preview -->
+        <div class="detected-coins" id="detectedCoins">
+          <div class="detected-coin">
+            <img src="" id="detectedObverse" alt="Obverse" onclick="openImageModal(this.src)">
+            <span>Obverse (tap to enlarge)</span>
+          </div>
+          <div class="detected-coin">
+            <img src="" id="detectedReverse" alt="Reverse" onclick="openImageModal(this.src)">
+            <span>Reverse (tap to enlarge)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Section (Two Photos Mode) -->
+    <div class="upload-section" id="twoPhotosUpload">
       <!-- Obverse Card -->
       <div class="upload-card" id="obverseCard">
         <h3><i class="fas fa-sun"></i> Obverse (Front)</h3>
         <div class="coin-preview">
-          <img src="" class="coin-preview-img" id="obversePreview" alt="Obverse">
+          <img src="" class="coin-preview-img" id="obversePreview" alt="Obverse" onclick="openImageModal(this.src)" style="cursor: pointer;">
           <div class="coin-placeholder" id="obversePlaceholder">
             <i class="fas fa-camera"></i>
             <span>Tap to capture</span>
@@ -806,7 +1057,7 @@
       <div class="upload-card inactive" id="reverseCard">
         <h3><i class="fas fa-moon"></i> Reverse (Back)</h3>
         <div class="coin-preview">
-          <img src="" class="coin-preview-img" id="reversePreview" alt="Reverse">
+          <img src="" class="coin-preview-img" id="reversePreview" alt="Reverse" onclick="openImageModal(this.src)" style="cursor: pointer;">
           <div class="coin-placeholder" id="reversePlaceholder">
             <i class="fas fa-camera"></i>
             <span>Tap to capture</span>
@@ -885,10 +1136,141 @@
     let obverseFile = null;
     let reverseFile = null;
     let cameraStream = null;
+    let uploadMode = 'two'; // 'two' or 'combined'
+    let combinedFile = null;
 
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
       loadCompanies();
+    });
+
+    // Set upload mode
+    function setUploadMode(mode) {
+      uploadMode = mode;
+      
+      // Update toggle buttons
+      document.getElementById('modeTwoPhotos').classList.toggle('active', mode === 'two');
+      document.getElementById('modeCombined').classList.toggle('active', mode === 'combined');
+      
+      // Show/hide sections
+      document.getElementById('twoPhotosUpload').style.display = mode === 'two' ? '' : 'none';
+      document.getElementById('combinedUpload').classList.toggle('visible', mode === 'combined');
+      document.getElementById('stepsIndicator').style.display = mode === 'two' ? '' : 'none';
+      
+      // Reset and update button state
+      updateGradeButton();
+    }
+
+    // Handle combined file upload
+    async function handleCombinedFile(input) {
+      const file = input.files[0];
+      if (!file) return;
+      
+      combinedFile = file;
+      
+      // Show preview
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const preview = document.getElementById('combinedPreviewImg');
+        const placeholder = document.getElementById('combinedPlaceholder');
+        const container = document.getElementById('combinedPreview');
+        
+        preview.src = e.target.result;
+        preview.classList.add('visible');
+        placeholder.classList.add('hidden');
+        container.classList.add('has-image');
+      };
+      reader.readAsDataURL(file);
+      
+      // Split the image using backend
+      await splitCombinedImage(file);
+    }
+
+    // Split combined image into obverse and reverse
+    async function splitCombinedImage(file) {
+      const loading = document.getElementById('loadingOverlay');
+      loading.querySelector('.loading-text').textContent = 'Detecting coins...';
+      loading.classList.add('visible');
+      
+      try {
+        const formData = new FormData();
+        formData.append('image', file);
+        
+        const response = await fetch('/split-combined', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to detect coins');
+        }
+        
+        const result = await response.json();
+        
+        // Show detected coins
+        document.getElementById('detectedObverse').src = 'data:image/jpeg;base64,' + result.obverse;
+        document.getElementById('detectedReverse').src = 'data:image/jpeg;base64,' + result.reverse;
+        document.getElementById('detectedCoins').classList.add('visible');
+        
+        // Convert base64 to files for submission
+        obverseFile = base64ToFile(result.obverse, 'obverse.jpg');
+        reverseFile = base64ToFile(result.reverse, 'reverse.jpg');
+        
+        updateGradeButton();
+        
+      } catch (error) {
+        alert('Could not detect coins: ' + error.message + '\n\nTry using "Two Photos" mode instead.');
+        resetCombinedUpload();
+      } finally {
+        loading.classList.remove('visible');
+        loading.querySelector('.loading-text').textContent = 'Analyzing coin...';
+      }
+    }
+
+    // Convert base64 to File object
+    function base64ToFile(base64, filename) {
+      const byteString = atob(base64);
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+      }
+      return new File([ab], filename, { type: 'image/jpeg' });
+    }
+
+    // Reset combined upload
+    function resetCombinedUpload() {
+      combinedFile = null;
+      document.getElementById('combinedPreviewImg').src = '';
+      document.getElementById('combinedPreviewImg').classList.remove('visible');
+      document.getElementById('combinedPlaceholder').classList.remove('hidden');
+      document.getElementById('combinedPreview').classList.remove('has-image');
+      document.getElementById('detectedCoins').classList.remove('visible');
+    }
+
+    // Image Modal functions
+    function openImageModal(src) {
+      if (!src) return;
+      const modal = document.getElementById('imageModal');
+      const img = document.getElementById('imageModalImg');
+      img.src = src;
+      modal.classList.add('visible');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closeImageModal() {
+      const modal = document.getElementById('imageModal');
+      modal.classList.remove('visible');
+      document.body.style.overflow = '';
+    }
+
+    // Close modal on escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeImageModal();
+        closeCamera();
+      }
     });
 
     // Load companies
@@ -1025,7 +1407,8 @@
 
     // Update grade button
     function updateGradeButton() {
-      document.getElementById('gradeBtn').disabled = !(obverseFile && reverseFile);
+      const hasFiles = obverseFile && reverseFile;
+      document.getElementById('gradeBtn').disabled = !hasFiles;
     }
 
     // Submit for grading
@@ -1080,6 +1463,7 @@
       obverseFile = null;
       reverseFile = null;
       
+      // Reset two photos mode
       ['obverse', 'reverse'].forEach(side => {
         const preview = document.getElementById(side + 'Preview');
         const placeholder = document.getElementById(side + 'Placeholder');
@@ -1092,6 +1476,11 @@
       });
       
       document.getElementById('reverseCard').classList.add('inactive');
+      
+      // Reset combined mode
+      resetCombinedUpload();
+      
+      // Reset common elements
       document.getElementById('resultsCard').classList.remove('visible');
       document.getElementById('gradeBtn').disabled = true;
       
