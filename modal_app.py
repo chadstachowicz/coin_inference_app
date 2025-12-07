@@ -287,6 +287,8 @@ class CoinGrader:
             return f"XF{grade}"
         elif grade >= 20:
             return f"VF{grade}"
+        elif grade >= 12:
+            return f"F{grade}"
         elif grade >= 8:
             return f"VG{grade:02d}"
         elif grade >= 4:
@@ -672,6 +674,7 @@ async def serve_static(filename: str):
 @app.function(
     image=image,
     volumes={MODEL_DIR: model_volume},
+    allow_concurrent_inputs=100
 )
 @modal.asgi_app()
 def fastapi_app():
