@@ -181,6 +181,135 @@
       background: var(--gold-dark);
     }
 
+    /* Example Section */
+    .example-section {
+      background: var(--white);
+      border-radius: 12px;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+      overflow: hidden;
+    }
+
+    .example-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 1.25rem;
+      cursor: pointer;
+      color: var(--gold-primary);
+      font-weight: 500;
+      font-size: 0.95rem;
+      transition: background 0.2s;
+    }
+
+    .example-header:hover {
+      background: var(--gray-50);
+    }
+
+    .example-header i:first-child {
+      margin-right: 0.5rem;
+    }
+
+    #exampleChevron {
+      transition: transform 0.3s;
+    }
+
+    #exampleChevron.rotated {
+      transform: rotate(180deg);
+    }
+
+    .example-content {
+      padding: 0 1.25rem 1.25rem;
+      border-top: 1px solid var(--gray-100);
+    }
+
+    .example-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .example-item {
+      text-align: center;
+    }
+
+    .example-item img {
+      width: 100%;
+      max-width: 180px;
+      height: auto;
+      border-radius: 12px;
+      border: 2px solid var(--gray-200);
+      cursor: pointer;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .example-item img:hover {
+      transform: scale(1.02);
+      border-color: var(--gold-primary);
+    }
+
+    .example-item p {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--gray-600);
+    }
+
+    .example-item p strong {
+      color: var(--gray-800);
+    }
+
+    .example-item p small {
+      color: var(--gray-400);
+    }
+
+    .example-tip {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      background: var(--gray-50);
+      border-radius: 8px;
+      font-size: 0.85rem;
+      color: var(--gray-600);
+    }
+
+    .example-tip i {
+      color: var(--gold-primary);
+      margin-right: 0.5rem;
+    }
+
+    .example-single {
+      text-align: center;
+      margin-top: 1rem;
+    }
+
+    .example-single img {
+      max-width: 100%;
+      max-height: 250px;
+      border-radius: 12px;
+      border: 2px solid var(--gray-200);
+      cursor: pointer;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .example-single img:hover {
+      transform: scale(1.02);
+      border-color: var(--gold-primary);
+    }
+
+    .example-single p {
+      margin-top: 0.75rem;
+      font-size: 0.9rem;
+      color: var(--gray-600);
+    }
+
+    .example-single p strong {
+      color: var(--gray-800);
+    }
+
+    .example-single p small {
+      color: var(--gray-400);
+    }
+
     /* Coin Upload Section */
     .upload-section {
       display: flex;
@@ -1006,6 +1135,38 @@
       <div class="step-dot" id="step3"></div>
     </div>
 
+    <!-- Example Images Section (Dynamic based on mode) -->
+    <div class="example-section" id="exampleSection">
+      <div class="example-header" onclick="toggleExamples()">
+        <span><i class="fas fa-lightbulb"></i> Need an example? See what to upload</span>
+        <i class="fas fa-chevron-down" id="exampleChevron"></i>
+      </div>
+      <div class="example-content" id="exampleContent" style="display: none;">
+        <!-- Two Photos Example -->
+        <div id="exampleTwoPhotos">
+          <div class="example-grid">
+            <div class="example-item">
+              <img src="/static/obverse.jpeg" alt="Obverse Example" onclick="openImageModal(this.src)">
+              <p><strong>Obverse (Front)</strong><br><small>The "heads" side with the main design</small></p>
+            </div>
+            <div class="example-item">
+              <img src="/static/reverse.jpeg" alt="Reverse Example" onclick="openImageModal(this.src)">
+              <p><strong>Reverse (Back)</strong><br><small>The "tails" side of the coin</small></p>
+            </div>
+          </div>
+          <p class="example-tip"><i class="fas fa-info-circle"></i> Upload clear, well-lit photos of each side. The coin should fill most of the frame.</p>
+        </div>
+        <!-- Combined/TrueView Example -->
+        <div id="exampleCombined" style="display: none;">
+          <div class="example-single">
+            <img src="/static/sidebyside.jpg" alt="Combined Example" onclick="openImageModal(this.src)">
+            <p><strong>Combined TrueView Image</strong><br><small>Both sides in one image - we'll automatically detect and separate them</small></p>
+          </div>
+          <p class="example-tip"><i class="fas fa-info-circle"></i> Upload a TrueView or slab photo with both sides visible. Left side should be obverse, right side reverse.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Combined Image Upload (TrueView/Slab) -->
     <div class="combined-upload" id="combinedUpload">
       <div class="upload-card">
@@ -1154,19 +1315,37 @@
       loadCompanies();
     });
 
+    // Toggle example images section
+    function toggleExamples() {
+      const content = document.getElementById('exampleContent');
+      const chevron = document.getElementById('exampleChevron');
+      
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        chevron.classList.add('rotated');
+      } else {
+        content.style.display = 'none';
+        chevron.classList.remove('rotated');
+      }
+    }
+
     // Set upload mode
     function setUploadMode(mode) {
       uploadMode = mode;
-      
+
       // Update toggle buttons
       document.getElementById('modeTwoPhotos').classList.toggle('active', mode === 'two');
       document.getElementById('modeCombined').classList.toggle('active', mode === 'combined');
-      
+
       // Show/hide sections
       document.getElementById('twoPhotosUpload').style.display = mode === 'two' ? '' : 'none';
       document.getElementById('combinedUpload').classList.toggle('visible', mode === 'combined');
       document.getElementById('stepsIndicator').style.display = mode === 'two' ? '' : 'none';
-      
+
+      // Update example section to show correct example for mode
+      document.getElementById('exampleTwoPhotos').style.display = mode === 'two' ? '' : 'none';
+      document.getElementById('exampleCombined').style.display = mode === 'combined' ? '' : 'none';
+
       // Reset and update button state
       updateGradeButton();
     }

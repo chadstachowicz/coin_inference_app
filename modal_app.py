@@ -40,6 +40,9 @@ IMAGES_DIR = "/images"
 # Database secret (create with: modal secret create neon-db DATABASE_URL="postgresql://...")
 db_secret = modal.Secret.from_name("neon-db")
 
+# Admin credentials secret
+admin_secret = modal.Secret.from_name("custom-secret")
+
 # Get path to static files
 LOCAL_STATIC_DIR = Path(__file__).parent / "static"
 
@@ -134,8 +137,21 @@ def init_database():
                 
                 detection_method VARCHAR(20),
                 coins_found INTEGER,
-                processing_time_ms INTEGER
+                processing_time_ms INTEGER,
+                has_images BOOLEAN DEFAULT FALSE
             )
+        """)
+        
+        # Add has_images column to split_requests if it doesn't exist
+        cur.execute("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='split_requests' AND column_name='has_images') 
+                THEN 
+                    ALTER TABLE split_requests ADD COLUMN has_images BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
         """)
         
         # Indexes for analytics queries
@@ -239,31 +255,63 @@ def get_prediction_image(prediction_id: int, side: str) -> bytes:
         return None
 
 
-def log_split_request(ip: str, user_agent: str, result: dict, processing_time_ms: int):
-    """Log a split request to the database."""
+def log_split_request(ip: str, user_agent: str, result: dict, processing_time_ms: int, 
+                      has_images: bool = False):
+    """Log a split request to the database. Returns the split request ID."""
     conn = get_db_connection()
     if not conn:
-        return
-    
+        return None
+
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO split_requests 
-            (ip_address, user_agent, detection_method, coins_found, processing_time_ms)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO split_requests
+            (ip_address, user_agent, detection_method, coins_found, processing_time_ms, has_images)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
         """, (
             ip,
             user_agent[:500] if user_agent else None,
             result.get("detection_method"),
             result.get("coins_found"),
-            processing_time_ms
+            processing_time_ms,
+            has_images
         ))
+        split_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
+        return split_id
     except Exception as e:
         print(f"Error logging split request: {e}")
         conn.close()
+        return None
+
+
+def save_split_images(split_id: int, original_bytes: bytes, obverse_bytes: bytes, reverse_bytes: bytes):
+    """Save split request images to the images volume."""
+    import os
+    
+    try:
+        # Create directory for this split request
+        split_dir = f"{IMAGES_DIR}/splits/{split_id}"
+        os.makedirs(split_dir, exist_ok=True)
+        
+        # Save original TrueView image
+        with open(f"{split_dir}/original.jpg", "wb") as f:
+            f.write(original_bytes)
+        
+        # Save split images
+        with open(f"{split_dir}/obverse.jpg", "wb") as f:
+            f.write(obverse_bytes)
+        
+        with open(f"{split_dir}/reverse.jpg", "wb") as f:
+            f.write(reverse_bytes)
+        
+        return True
+    except Exception as e:
+        print(f"Error saving split images: {e}")
+        return False
 
 
 def get_analytics_stats():
@@ -687,15 +735,46 @@ class CoinGrader:
 # WEB ENDPOINTS (FastAPI)
 # ============================================================================
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from typing import Optional
+import secrets
 
 web_app = FastAPI(title="Numisking Coin Grader")
 
 # Static files are mounted at /app/static in the container
 CONTAINER_STATIC_DIR = "/app/static"
+
+# HTTP Basic Auth for admin endpoints
+security = HTTPBasic()
+
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    """Verify admin credentials for protected endpoints."""
+    import os
+    
+    # Read credentials from Modal secrets (environment variables)
+    admin_username = os.environ.get("USERNAME", "")
+    admin_password = os.environ.get("PASSWORD", "")
+    
+    if not admin_username or not admin_password:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin credentials not configured",
+        )
+    
+    correct_username = secrets.compare_digest(credentials.username, admin_username)
+    correct_password = secrets.compare_digest(credentials.password, admin_password)
+
+    if not (correct_username and correct_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
 
 def get_client_ip(request: Request) -> str:
@@ -965,6 +1044,48 @@ def save_images_worker(prediction_id: int, obverse_bytes: bytes, reverse_bytes: 
         return False
 
 
+@app.function(
+    image=image,
+    volumes={IMAGES_DIR: images_volume},
+    secrets=[db_secret],
+    cpu=0.5,
+    memory=512,
+    scaledown_window=60,
+)
+def save_split_images_worker(split_id: int, original_bytes: bytes, obverse_b64: str, reverse_b64: str):
+    """Save split request images (original + detected coins) to the images volume."""
+    import os
+    import base64
+    
+    try:
+        # Create directory for this split request
+        split_dir = f"{IMAGES_DIR}/splits/{split_id}"
+        os.makedirs(split_dir, exist_ok=True)
+        
+        # Save original TrueView image
+        with open(f"{split_dir}/original.jpg", "wb") as f:
+            f.write(original_bytes)
+        
+        # Decode and save obverse
+        obverse_bytes = base64.b64decode(obverse_b64)
+        with open(f"{split_dir}/obverse.jpg", "wb") as f:
+            f.write(obverse_bytes)
+        
+        # Decode and save reverse
+        reverse_bytes = base64.b64decode(reverse_b64)
+        with open(f"{split_dir}/reverse.jpg", "wb") as f:
+            f.write(reverse_bytes)
+        
+        # Commit changes to volume
+        images_volume.commit()
+        
+        print(f"✅ Saved split images for split {split_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving split images for split {split_id}: {e}")
+        return False
+
+
 # ============================================================================
 # IMAGE SPLITTER - Dedicated CPU function for splitting combined images
 # ============================================================================
@@ -1092,18 +1213,23 @@ def split_image_worker(image_bytes: bytes) -> dict:
 
 
 @web_app.post("/split-combined")
-async def split_combined(request: Request, image: UploadFile = File(...)):
+async def split_combined(
+    request: Request, 
+    image: UploadFile = File(...),
+    save_images: bool = Form(True, description="Save original and split images (default True)")
+):
     """
     Split a combined TrueView/slab image into obverse and reverse.
 
     Offloads CPU-intensive work to a dedicated worker that auto-scales.
+    Saves the original TrueView image along with the detected coins.
     """
     start_time = time.time()
-    
+
     # Get client info for logging
     client_ip = get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
-    
+
     image_bytes = await image.read()
 
     # Offload to CPU worker - non-blocking async call
@@ -1114,12 +1240,23 @@ async def split_combined(request: Request, image: UploadFile = File(...)):
 
     # Log the split request
     processing_time_ms = int((time.time() - start_time) * 1000)
-    log_split_request(
+    split_id = log_split_request(
         ip=client_ip,
         user_agent=user_agent,
         result=result,
-        processing_time_ms=processing_time_ms
+        processing_time_ms=processing_time_ms,
+        has_images=save_images
     )
+
+    # Save original and split images in background
+    if save_images and split_id:
+        save_split_images_worker.spawn(
+            split_id, 
+            image_bytes, 
+            result["obverse"],  # base64 
+            result["reverse"]   # base64
+        )
+        result["split_id"] = split_id
 
     return result
 
@@ -1147,9 +1284,9 @@ async def health():
 
 
 @web_app.get("/admin/stats")
-async def admin_stats(request: Request):
+async def admin_stats(request: Request, username: str = Depends(verify_admin)):
     """
-    Get analytics statistics.
+    Get analytics statistics. (Protected - requires admin login)
     
     Returns usage stats including:
     - Total predictions and splits
@@ -1171,9 +1308,9 @@ async def admin_stats(request: Request):
 
 
 @web_app.get("/admin/recent")
-async def admin_recent(limit: int = 50, offset: int = 0):
+async def admin_recent(limit: int = 50, offset: int = 0, username: str = Depends(verify_admin)):
     """
-    Get recent predictions.
+    Get recent predictions. (Protected - requires admin login)
     
     Returns the most recent predictions with details.
     """
@@ -1218,9 +1355,9 @@ async def admin_recent(limit: int = 50, offset: int = 0):
 
 
 @web_app.get("/admin/trends")
-async def admin_trends(period: str = "7d"):
+async def admin_trends(period: str = "7d", username: str = Depends(verify_admin)):
     """
-    Get prediction trends for charting.
+    Get prediction trends for charting. (Protected - requires admin login)
     
     Periods: 24h (hourly), 7d (daily), 30d (daily)
     """
@@ -1280,24 +1417,75 @@ async def admin_trends(period: str = "7d"):
 
 
 @web_app.get("/admin/images/{prediction_id}/{side}")
-async def get_prediction_image_endpoint(prediction_id: int, side: str):
+async def get_prediction_image_endpoint(prediction_id: int, side: str, username: str = Depends(verify_admin)):
     """
-    Get a prediction image (obverse or reverse).
+    Get a prediction image (obverse or reverse). (Protected - requires admin login)
     """
     from fastapi.responses import Response
     import os
-    
+
     if side not in ["obverse", "reverse"]:
         raise HTTPException(status_code=400, detail="Side must be 'obverse' or 'reverse'")
-    
+
+    # Reload volume to see latest images from other containers
+    try:
+        images_volume.reload()
+    except Exception as e:
+        print(f"Volume reload warning: {e}")
+
     # Try to get image from volume
     image_path = f"{IMAGES_DIR}/{prediction_id}/{side}.jpg"
-    
+
     try:
         if os.path.exists(image_path):
             with open(image_path, "rb") as f:
                 image_bytes = f.read()
-            return Response(content=image_bytes, media_type="image/jpeg")
+            return Response(
+                content=image_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600"}  # Cache for 1 hour
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Image not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@web_app.get("/admin/splits/{split_id}/{image_type}")
+async def get_split_image_endpoint(split_id: int, image_type: str, username: str = Depends(verify_admin)):
+    """
+    Get a split request image (original, obverse, or reverse). (Protected - requires admin login)
+    
+    - original: The original TrueView/combined image
+    - obverse: The detected obverse coin
+    - reverse: The detected reverse coin
+    """
+    from fastapi.responses import Response
+    import os
+
+    if image_type not in ["original", "obverse", "reverse"]:
+        raise HTTPException(status_code=400, detail="Image type must be 'original', 'obverse', or 'reverse'")
+
+    # Reload volume to see latest images from other containers
+    try:
+        images_volume.reload()
+    except Exception as e:
+        print(f"Volume reload warning: {e}")
+
+    # Try to get image from volume
+    image_path = f"{IMAGES_DIR}/splits/{split_id}/{image_type}.jpg"
+
+    try:
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            return Response(
+                content=image_bytes,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=3600"}  # Cache for 1 hour
+            )
         else:
             raise HTTPException(status_code=404, detail="Image not found")
     except HTTPException:
@@ -1307,8 +1495,8 @@ async def get_prediction_image_endpoint(prediction_id: int, side: str):
 
 
 @web_app.get("/admin", response_class=HTMLResponse)
-async def admin_page():
-    """Serve the admin dashboard."""
+async def admin_page(username: str = Depends(verify_admin)):
+    """Serve the admin dashboard. (Protected - requires admin login)"""
     admin_path = f"{CONTAINER_STATIC_DIR}/admin.html"
     try:
         with open(admin_path, "r") as f:
@@ -1337,7 +1525,7 @@ async def serve_static(filename: str):
         MODEL_DIR: model_volume,
         IMAGES_DIR: images_volume,  # For serving prediction images
     },
-    secrets=[db_secret],  # Include database credentials
+    secrets=[db_secret, admin_secret],  # Include database and admin credentials
     allow_concurrent_inputs=100
 )
 @modal.asgi_app()
