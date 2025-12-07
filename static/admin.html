@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard | Numisking</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+  
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            gold: {
+              50: '#FDF8E8',
+              100: '#FAF0D1',
+              200: '#F5E1A3',
+              300: '#E5C87A',
+              400: '#D4A84B',
+              500: '#C49A3D',
+              600: '#B8923A',
+              700: '#9A7A30',
+              800: '#7C6226',
+              900: '#5E4A1D',
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  
+  <style>
+    .gradient-gold {
+      background: linear-gradient(135deg, #D4A84B 0%, #C49A3D 50%, #B8923A 100%);
+    }
+    .stat-card {
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+    }
+    .image-grid img {
+      transition: transform 0.2s;
+    }
+    .image-grid img:hover {
+      transform: scale(1.05);
+    }
+    .loading {
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body class="bg-gray-50 font-sans min-h-screen">
+  
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <a href="/" class="flex items-center gap-2 text-gold-400 font-bold text-xl">
+          <i class="fas fa-coins text-2xl"></i>
+          <span>Numisking</span>
+        </a>
+        <nav class="flex items-center gap-6">
+          <a href="/" class="text-gray-600 hover:text-gold-500 font-medium">Grader</a>
+          <a href="/admin" class="text-gold-500 font-semibold">Dashboard</a>
+        </nav>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero -->
+  <div class="gradient-gold text-white py-8 px-4">
+    <div class="max-w-7xl mx-auto">
+      <h1 class="text-3xl font-bold mb-2">Admin Dashboard</h1>
+      <p class="text-white/90">Analytics, predictions, and usage insights</p>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    
+    <!-- Stats Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <div class="stat-card bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-500 text-sm font-medium">Total Predictions</p>
+            <p class="text-3xl font-bold text-gray-900 mt-1" id="stat-total">-</p>
+          </div>
+          <div class="w-12 h-12 bg-gold-100 rounded-full flex items-center justify-center">
+            <i class="fas fa-chart-line text-gold-500 text-xl"></i>
+          </div>
+        </div>
+      </div>
+      
+      <div class="stat-card bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-500 text-sm font-medium">Today</p>
+            <p class="text-3xl font-bold text-gray-900 mt-1" id="stat-today">-</p>
+          </div>
+          <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+            <i class="fas fa-calendar-day text-green-500 text-xl"></i>
+          </div>
+        </div>
+      </div>
+      
+      <div class="stat-card bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-500 text-sm font-medium">Unique Users</p>
+            <p class="text-3xl font-bold text-gray-900 mt-1" id="stat-users">-</p>
+          </div>
+          <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+            <i class="fas fa-users text-blue-500 text-xl"></i>
+          </div>
+        </div>
+      </div>
+      
+      <div class="stat-card bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-gray-500 text-sm font-medium">Avg Response</p>
+            <p class="text-3xl font-bold text-gray-900 mt-1" id="stat-response">-</p>
+          </div>
+          <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+            <i class="fas fa-bolt text-purple-500 text-xl"></i>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+      
+      <!-- Predictions Trend Chart -->
+      <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-900">Predictions Trend</h2>
+          <select id="trend-period" class="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-gold-400 focus:border-gold-400">
+            <option value="24h">Last 24 Hours</option>
+            <option value="7d" selected>Last 7 Days</option>
+            <option value="30d">Last 30 Days</option>
+          </select>
+        </div>
+        <div class="h-64">
+          <canvas id="trend-chart"></canvas>
+        </div>
+      </div>
+      
+      <!-- Grade Distribution Chart -->
+      <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Grade Distribution</h2>
+        <div class="h-64">
+          <canvas id="grade-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Second Row -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+      
+      <!-- Top Users -->
+      <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Top Users by IP</h2>
+        <div class="space-y-3" id="top-users">
+          <div class="loading h-8 bg-gray-100 rounded"></div>
+          <div class="loading h-8 bg-gray-100 rounded"></div>
+          <div class="loading h-8 bg-gray-100 rounded"></div>
+        </div>
+      </div>
+      
+      <!-- Quick Stats -->
+      <div class="bg-white rounded-xl p-6 shadow-sm border border-gray-100 lg:col-span-2">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Quick Stats</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="text-center p-4 bg-gray-50 rounded-lg">
+            <p class="text-2xl font-bold text-gold-500" id="stat-7d">-</p>
+            <p class="text-sm text-gray-500">Last 7 Days</p>
+          </div>
+          <div class="text-center p-4 bg-gray-50 rounded-lg">
+            <p class="text-2xl font-bold text-gold-500" id="stat-splits">-</p>
+            <p class="text-sm text-gray-500">Image Splits</p>
+          </div>
+          <div class="text-center p-4 bg-gray-50 rounded-lg">
+            <p class="text-2xl font-bold text-gold-500" id="stat-confidence">-</p>
+            <p class="text-sm text-gray-500">Avg Confidence</p>
+          </div>
+          <div class="text-center p-4 bg-gray-50 rounded-lg">
+            <p class="text-2xl font-bold text-gold-500" id="stat-users-today">-</p>
+            <p class="text-sm text-gray-500">Users Today</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Predictions with Images -->
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 mb-8">
+      <div class="p-6 border-b border-gray-100">
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-gray-900">Recent Predictions</h2>
+          <div class="flex items-center gap-4">
+            <button id="refresh-btn" class="text-sm text-gold-500 hover:text-gold-600 font-medium flex items-center gap-1">
+              <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+            <button id="view-gallery-btn" class="text-sm bg-gold-400 hover:bg-gold-500 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2">
+              <i class="fas fa-images"></i> View Gallery
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <div class="overflow-x-auto">
+        <table class="w-full">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Images</th>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Grade</th>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Confidence</th>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">IP Address</th>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Time</th>
+              <th class="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Duration</th>
+            </tr>
+          </thead>
+          <tbody id="predictions-table" class="divide-y divide-gray-100">
+            <tr>
+              <td colspan="6" class="px-6 py-8 text-center text-gray-400">
+                <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+                <p>Loading predictions...</p>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      
+      <div class="p-4 border-t border-gray-100 flex justify-center">
+        <button id="load-more-btn" class="text-sm text-gray-600 hover:text-gold-500 font-medium">
+          Load More <i class="fas fa-chevron-down ml-1"></i>
+        </button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Image Gallery Modal -->
+  <div id="gallery-modal" class="fixed inset-0 bg-black/70 z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+      <div class="p-6 border-b border-gray-100 flex items-center justify-between">
+        <h2 class="text-xl font-semibold text-gray-900">Prediction Gallery</h2>
+        <button id="close-gallery" class="text-gray-400 hover:text-gray-600">
+          <i class="fas fa-times text-xl"></i>
+        </button>
+      </div>
+      <div class="p-6 overflow-y-auto flex-1">
+        <div id="gallery-grid" class="image-grid grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          <!-- Images will be loaded here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Preview Modal -->
+  <div id="preview-modal" class="fixed inset-0 bg-black/80 z-50 hidden flex items-center justify-center p-4">
+    <div class="relative max-w-4xl w-full">
+      <button id="close-preview" class="absolute -top-12 right-0 text-white hover:text-gold-400">
+        <i class="fas fa-times text-2xl"></i>
+      </button>
+      <div class="bg-white rounded-xl overflow-hidden">
+        <div class="flex flex-col md:flex-row">
+          <div class="flex-1 bg-gray-100 p-4">
+            <div class="flex gap-4">
+              <div class="flex-1">
+                <p class="text-xs text-gray-500 mb-2 text-center">Obverse</p>
+                <img id="preview-obverse" class="w-full rounded-lg" src="" alt="Obverse">
+              </div>
+              <div class="flex-1">
+                <p class="text-xs text-gray-500 mb-2 text-center">Reverse</p>
+                <img id="preview-reverse" class="w-full rounded-lg" src="" alt="Reverse">
+              </div>
+            </div>
+          </div>
+          <div class="p-6 md:w-64">
+            <h3 class="text-2xl font-bold text-gold-500 mb-4" id="preview-grade">-</h3>
+            <div class="space-y-3 text-sm">
+              <div>
+                <p class="text-gray-500">Confidence</p>
+                <p class="font-semibold" id="preview-confidence">-</p>
+              </div>
+              <div>
+                <p class="text-gray-500">Sheldon Grade</p>
+                <p class="font-semibold" id="preview-sheldon">-</p>
+              </div>
+              <div>
+                <p class="text-gray-500">Company</p>
+                <p class="font-semibold" id="preview-company">-</p>
+              </div>
+              <div>
+                <p class="text-gray-500">Date</p>
+                <p class="font-semibold" id="preview-date">-</p>
+              </div>
+              <div>
+                <p class="text-gray-500">IP Address</p>
+                <p class="font-semibold" id="preview-ip">-</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let trendChart = null;
+    let gradeChart = null;
+    let currentOffset = 0;
+    const pageSize = 20;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      loadStats();
+      loadRecentPredictions();
+      initCharts();
+      
+      // Event listeners
+      document.getElementById('refresh-btn').addEventListener('click', () => {
+        loadStats();
+        loadRecentPredictions();
+      });
+      
+      document.getElementById('trend-period').addEventListener('change', loadTrendData);
+      
+      document.getElementById('view-gallery-btn').addEventListener('click', openGallery);
+      document.getElementById('close-gallery').addEventListener('click', closeGallery);
+      document.getElementById('close-preview').addEventListener('click', closePreview);
+      
+      document.getElementById('load-more-btn').addEventListener('click', loadMorePredictions);
+      
+      // Close modals on backdrop click
+      document.getElementById('gallery-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'gallery-modal') closeGallery();
+      });
+      document.getElementById('preview-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'preview-modal') closePreview();
+      });
+      
+      // Auto-refresh every 30 seconds
+      setInterval(() => {
+        loadStats();
+      }, 30000);
+    });
+
+    // Load stats
+    async function loadStats() {
+      try {
+        const response = await fetch('/admin/stats');
+        const data = await response.json();
+        
+        if (data.error) {
+          console.error('Stats error:', data.error);
+          return;
+        }
+        
+        // Update stat cards
+        document.getElementById('stat-total').textContent = formatNumber(data.total_predictions || 0);
+        document.getElementById('stat-today').textContent = formatNumber(data.predictions_today || 0);
+        document.getElementById('stat-users').textContent = formatNumber(data.unique_ips_total || 0);
+        document.getElementById('stat-response').textContent = data.avg_processing_time_ms 
+          ? `${Math.round(data.avg_processing_time_ms)}ms` 
+          : '-';
+        
+        // Quick stats
+        document.getElementById('stat-7d').textContent = formatNumber(data.predictions_7d || 0);
+        document.getElementById('stat-splits').textContent = formatNumber(data.total_splits || 0);
+        document.getElementById('stat-confidence').textContent = data.avg_confidence 
+          ? `${data.avg_confidence}%` 
+          : '-';
+        document.getElementById('stat-users-today').textContent = formatNumber(data.unique_ips_today || 0);
+        
+        // Top users
+        renderTopUsers(data.top_ips || []);
+        
+        // Grade distribution chart
+        updateGradeChart(data.grade_distribution || []);
+        
+        // Trend chart
+        updateTrendChart(data.hourly_predictions_24h || []);
+        
+      } catch (error) {
+        console.error('Failed to load stats:', error);
+      }
+    }
+
+    // Load recent predictions
+    async function loadRecentPredictions(append = false) {
+      try {
+        const offset = append ? currentOffset : 0;
+        const response = await fetch(`/admin/recent?limit=${pageSize}&offset=${offset}`);
+        const data = await response.json();
+        
+        if (data.error) {
+          console.error('Predictions error:', data.error);
+          return;
+        }
+        
+        if (!append) {
+          currentOffset = 0;
+        }
+        
+        renderPredictionsTable(data.predictions || [], append);
+        currentOffset += pageSize;
+        
+      } catch (error) {
+        console.error('Failed to load predictions:', error);
+      }
+    }
+
+    function loadMorePredictions() {
+      loadRecentPredictions(true);
+    }
+
+    // Render predictions table
+    function renderPredictionsTable(predictions, append = false) {
+      const tbody = document.getElementById('predictions-table');
+      
+      if (!append) {
+        tbody.innerHTML = '';
+      }
+      
+      if (predictions.length === 0 && !append) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="6" class="px-6 py-8 text-center text-gray-400">
+              <i class="fas fa-inbox text-3xl mb-2"></i>
+              <p>No predictions yet</p>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+      
+      predictions.forEach(pred => {
+        const row = document.createElement('tr');
+        row.className = 'hover:bg-gray-50 cursor-pointer';
+        row.onclick = () => openPreview(pred);
+        
+        const hasImages = pred.has_images;
+        const timeAgo = getTimeAgo(pred.created_at);
+        
+        row.innerHTML = `
+          <td class="px-6 py-4">
+            ${hasImages ? `
+              <div class="flex gap-2">
+                <img src="/admin/images/${pred.id}/obverse" 
+                     class="w-12 h-12 rounded-lg object-cover border border-gray-200" 
+                     alt="Obverse"
+                     onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect fill=%22%23f3f4f6%22 width=%22100%22 height=%22100%22/><text x=%2250%22 y=%2255%22 text-anchor=%22middle%22 fill=%22%239ca3af%22 font-size=%2212%22>No img</text></svg>'">
+                <img src="/admin/images/${pred.id}/reverse" 
+                     class="w-12 h-12 rounded-lg object-cover border border-gray-200" 
+                     alt="Reverse"
+                     onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect fill=%22%23f3f4f6%22 width=%22100%22 height=%22100%22/><text x=%2250%22 y=%2255%22 text-anchor=%22middle%22 fill=%22%239ca3af%22 font-size=%2212%22>No img</text></svg>'">
+              </div>
+            ` : `
+              <div class="w-12 h-12 bg-gray-100 rounded-lg flex items-center justify-center text-gray-400">
+                <i class="fas fa-image"></i>
+              </div>
+            `}
+          </td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center px-2.5 py-1 rounded-full text-sm font-semibold bg-gold-100 text-gold-700">
+              ${pred.predicted_grade || '-'}
+            </span>
+          </td>
+          <td class="px-6 py-4">
+            <div class="flex items-center gap-2">
+              <div class="w-16 bg-gray-200 rounded-full h-2">
+                <div class="bg-gold-400 h-2 rounded-full" style="width: ${pred.confidence || 0}%"></div>
+              </div>
+              <span class="text-sm text-gray-600">${pred.confidence ? pred.confidence + '%' : '-'}</span>
+            </div>
+          </td>
+          <td class="px-6 py-4 text-sm text-gray-600 font-mono">${maskIP(pred.ip_address)}</td>
+          <td class="px-6 py-4 text-sm text-gray-500">${timeAgo}</td>
+          <td class="px-6 py-4 text-sm text-gray-500">${pred.processing_time_ms ? pred.processing_time_ms + 'ms' : '-'}</td>
+        `;
+        
+        tbody.appendChild(row);
+      });
+    }
+
+    // Render top users
+    function renderTopUsers(users) {
+      const container = document.getElementById('top-users');
+      
+      if (users.length === 0) {
+        container.innerHTML = '<p class="text-gray-400 text-sm">No data yet</p>';
+        return;
+      }
+      
+      container.innerHTML = users.slice(0, 5).map((user, index) => `
+        <div class="flex items-center justify-between py-2 ${index > 0 ? 'border-t border-gray-100' : ''}">
+          <div class="flex items-center gap-3">
+            <span class="w-6 h-6 rounded-full bg-gold-100 text-gold-600 text-xs font-semibold flex items-center justify-center">
+              ${index + 1}
+            </span>
+            <span class="text-sm font-mono text-gray-600">${maskIP(user.ip)}</span>
+          </div>
+          <span class="text-sm font-semibold text-gray-900">${user.count}</span>
+        </div>
+      `).join('');
+    }
+
+    // Initialize charts
+    function initCharts() {
+      // Trend chart
+      const trendCtx = document.getElementById('trend-chart').getContext('2d');
+      trendChart = new Chart(trendCtx, {
+        type: 'line',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Predictions',
+            data: [],
+            borderColor: '#D4A84B',
+            backgroundColor: 'rgba(212, 168, 75, 0.1)',
+            fill: true,
+            tension: 0.4,
+            pointRadius: 3,
+            pointBackgroundColor: '#D4A84B',
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { maxTicksLimit: 8 }
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: '#f3f4f6' }
+            }
+          }
+        }
+      });
+      
+      // Grade distribution chart
+      const gradeCtx = document.getElementById('grade-chart').getContext('2d');
+      gradeChart = new Chart(gradeCtx, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [{
+            label: 'Count',
+            data: [],
+            backgroundColor: '#D4A84B',
+            borderRadius: 4,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false }
+          },
+          scales: {
+            x: {
+              grid: { display: false }
+            },
+            y: {
+              beginAtZero: true,
+              grid: { color: '#f3f4f6' }
+            }
+          }
+        }
+      });
+    }
+
+    // Update trend chart
+    function updateTrendChart(data) {
+      if (!trendChart) return;
+      
+      trendChart.data.labels = data.map(d => {
+        const date = new Date(d.hour);
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      });
+      trendChart.data.datasets[0].data = data.map(d => d.count);
+      trendChart.update();
+    }
+
+    // Update grade chart
+    function updateGradeChart(data) {
+      if (!gradeChart) return;
+      
+      gradeChart.data.labels = data.map(d => d.grade);
+      gradeChart.data.datasets[0].data = data.map(d => d.count);
+      gradeChart.update();
+    }
+
+    // Load trend data based on period
+    async function loadTrendData() {
+      const period = document.getElementById('trend-period').value;
+      
+      try {
+        const response = await fetch(`/admin/trends?period=${period}`);
+        const data = await response.json();
+        
+        if (data.trend) {
+          trendChart.data.labels = data.trend.map(d => d.label);
+          trendChart.data.datasets[0].data = data.trend.map(d => d.count);
+          trendChart.update();
+        }
+      } catch (error) {
+        console.error('Failed to load trend data:', error);
+      }
+    }
+
+    // Gallery functions
+    async function openGallery() {
+      document.getElementById('gallery-modal').classList.remove('hidden');
+      
+      const grid = document.getElementById('gallery-grid');
+      grid.innerHTML = '<div class="col-span-full text-center py-8 text-gray-400"><i class="fas fa-spinner fa-spin text-2xl"></i></div>';
+      
+      try {
+        const response = await fetch('/admin/recent?limit=100');
+        const data = await response.json();
+        
+        const predictions = (data.predictions || []).filter(p => p.has_images);
+        
+        if (predictions.length === 0) {
+          grid.innerHTML = '<div class="col-span-full text-center py-8 text-gray-400"><i class="fas fa-images text-3xl mb-2"></i><p>No images yet</p></div>';
+          return;
+        }
+        
+        grid.innerHTML = predictions.map(pred => `
+          <div class="bg-gray-50 rounded-xl p-2 cursor-pointer hover:shadow-md transition" onclick='openPreview(${JSON.stringify(pred)})'>
+            <div class="flex gap-1 mb-2">
+              <img src="/admin/images/${pred.id}/obverse" class="w-1/2 aspect-square rounded-lg object-cover" alt="Obverse" onerror="this.style.display='none'">
+              <img src="/admin/images/${pred.id}/reverse" class="w-1/2 aspect-square rounded-lg object-cover" alt="Reverse" onerror="this.style.display='none'">
+            </div>
+            <div class="text-center">
+              <span class="text-sm font-semibold text-gold-500">${pred.predicted_grade || '-'}</span>
+              <span class="text-xs text-gray-400 ml-1">${pred.confidence ? pred.confidence + '%' : ''}</span>
+            </div>
+          </div>
+        `).join('');
+        
+      } catch (error) {
+        console.error('Failed to load gallery:', error);
+        grid.innerHTML = '<div class="col-span-full text-center py-8 text-red-400">Failed to load gallery</div>';
+      }
+    }
+
+    function closeGallery() {
+      document.getElementById('gallery-modal').classList.add('hidden');
+    }
+
+    // Preview functions
+    function openPreview(pred) {
+      document.getElementById('preview-modal').classList.remove('hidden');
+      
+      if (pred.has_images) {
+        document.getElementById('preview-obverse').src = `/admin/images/${pred.id}/obverse`;
+        document.getElementById('preview-reverse').src = `/admin/images/${pred.id}/reverse`;
+      } else {
+        document.getElementById('preview-obverse').src = '';
+        document.getElementById('preview-reverse').src = '';
+      }
+      
+      document.getElementById('preview-grade').textContent = pred.predicted_grade || '-';
+      document.getElementById('preview-confidence').textContent = pred.confidence ? pred.confidence + '%' : '-';
+      document.getElementById('preview-sheldon').textContent = pred.sheldon_grade || '-';
+      document.getElementById('preview-company').textContent = pred.company_used || 'N/A';
+      document.getElementById('preview-date').textContent = new Date(pred.created_at).toLocaleString();
+      document.getElementById('preview-ip').textContent = pred.ip_address || '-';
+    }
+
+    function closePreview() {
+      document.getElementById('preview-modal').classList.add('hidden');
+    }
+
+    // Utility functions
+    function formatNumber(num) {
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return num.toString();
+    }
+
+    function maskIP(ip) {
+      if (!ip) return '-';
+      const parts = ip.split('.');
+      if (parts.length === 4) {
+        return `${parts[0]}.${parts[1]}.*.*`;
+      }
+      return ip.substring(0, 10) + '...';
+    }
+
+    function getTimeAgo(dateString) {
+      if (!dateString) return '-';
+      
+      const date = new Date(dateString);
+      const now = new Date();
+      const seconds = Math.floor((now - date) / 1000);
+      
+      if (seconds < 60) return 'Just now';
+      if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+      if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+      if (seconds < 604800) return Math.floor(seconds / 86400) + 'd ago';
+      
+      return date.toLocaleDateString();
+    }
+  </script>
+</body>
+</html>

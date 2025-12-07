@@ -7,6 +7,9 @@ Deploy with:
 Run locally:
     modal serve modal_app.py
 
+Setup database secret (one-time):
+    modal secret create neon-db DATABASE_URL="postgresql://..."
+
 Test endpoint:
     curl -X POST "https://YOUR_APP_URL/predict" \
         -F "obverse=@coin_front.jpg" \
@@ -15,7 +18,9 @@ Test endpoint:
 
 import modal
 import io
+import time
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # ============================================================================
 # MODAL APP CONFIGURATION
@@ -27,6 +32,13 @@ app = modal.App("numisking-coin-grader")
 # Create a volume to store the model
 model_volume = modal.Volume.from_name("coin-grader-models", create_if_missing=True)
 MODEL_DIR = "/models"
+
+# Create a volume to store prediction images
+images_volume = modal.Volume.from_name("coin-grader-images", create_if_missing=True)
+IMAGES_DIR = "/images"
+
+# Database secret (create with: modal secret create neon-db DATABASE_URL="postgresql://...")
+db_secret = modal.Secret.from_name("neon-db")
 
 # Get path to static files
 LOCAL_STATIC_DIR = Path(__file__).parent / "static"
@@ -42,9 +54,313 @@ image = (
         "opencv-python-headless>=4.8.0",
         "fastapi>=0.100.0",
         "python-multipart>=0.0.6",
+        "psycopg2-binary>=2.9.0",  # PostgreSQL driver
     )
     .add_local_dir(LOCAL_STATIC_DIR, remote_path="/app/static")
 )
+
+
+# ============================================================================
+# DATABASE HELPERS
+# ============================================================================
+
+def get_db_connection():
+    """Get a database connection from the pool."""
+    import os
+    import psycopg2
+    
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return None
+    
+    try:
+        conn = psycopg2.connect(database_url)
+        return conn
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        return None
+
+
+def init_database():
+    """Initialize database tables if they don't exist."""
+    conn = get_db_connection()
+    if not conn:
+        print("⚠️ No database connection - analytics disabled")
+        return False
+    
+    try:
+        cur = conn.cursor()
+        
+        # Predictions table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS predictions (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT NOW(),
+                ip_address VARCHAR(45),
+                user_agent TEXT,
+                
+                predicted_grade VARCHAR(10),
+                sheldon_grade INTEGER,
+                confidence FLOAT,
+                company_used VARCHAR(20),
+                raw_score FLOAT,
+                processing_time_ms INTEGER,
+                
+                async_mode BOOLEAN DEFAULT FALSE,
+                job_id VARCHAR(100),
+                has_images BOOLEAN DEFAULT FALSE
+            )
+        """)
+        
+        # Add has_images column if it doesn't exist (for existing tables)
+        cur.execute("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='predictions' AND column_name='has_images') 
+                THEN 
+                    ALTER TABLE predictions ADD COLUMN has_images BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+        """)
+        
+        # Split requests table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS split_requests (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT NOW(),
+                ip_address VARCHAR(45),
+                user_agent TEXT,
+                
+                detection_method VARCHAR(20),
+                coins_found INTEGER,
+                processing_time_ms INTEGER
+            )
+        """)
+        
+        # Indexes for analytics queries
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_predictions_created_at 
+            ON predictions(created_at)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_predictions_ip 
+            ON predictions(ip_address)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_split_created_at 
+            ON split_requests(created_at)
+        """)
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Database tables initialized")
+        return True
+    except Exception as e:
+        print(f"Database init error: {e}")
+        conn.close()
+        return False
+
+
+def log_prediction(ip: str, user_agent: str, result: dict, processing_time_ms: int, 
+                   async_mode: bool = False, job_id: str = None, has_images: bool = False):
+    """Log a prediction to the database. Returns the prediction ID."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO predictions 
+            (ip_address, user_agent, predicted_grade, sheldon_grade, confidence, 
+             company_used, raw_score, processing_time_ms, async_mode, job_id, has_images)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            ip,
+            user_agent[:500] if user_agent else None,  # Truncate long user agents
+            result.get("prediction"),
+            result.get("sheldon_grade"),
+            result.get("confidence"),
+            result.get("company_used"),
+            result.get("raw_score"),
+            processing_time_ms,
+            async_mode,
+            job_id,
+            has_images
+        ))
+        prediction_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return prediction_id
+    except Exception as e:
+        print(f"Error logging prediction: {e}")
+        conn.close()
+        return None
+
+
+def save_prediction_images(prediction_id: int, obverse_bytes: bytes, reverse_bytes: bytes):
+    """Save prediction images to the images volume."""
+    import os
+    
+    try:
+        # Create directory for this prediction
+        pred_dir = f"{IMAGES_DIR}/{prediction_id}"
+        os.makedirs(pred_dir, exist_ok=True)
+        
+        # Save images
+        with open(f"{pred_dir}/obverse.jpg", "wb") as f:
+            f.write(obverse_bytes)
+        
+        with open(f"{pred_dir}/reverse.jpg", "wb") as f:
+            f.write(reverse_bytes)
+        
+        return True
+    except Exception as e:
+        print(f"Error saving images: {e}")
+        return False
+
+
+def get_prediction_image(prediction_id: int, side: str) -> bytes:
+    """Get a prediction image from the images volume."""
+    import os
+    
+    try:
+        image_path = f"{IMAGES_DIR}/{prediction_id}/{side}.jpg"
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as f:
+                return f.read()
+        return None
+    except Exception as e:
+        print(f"Error reading image: {e}")
+        return None
+
+
+def log_split_request(ip: str, user_agent: str, result: dict, processing_time_ms: int):
+    """Log a split request to the database."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO split_requests 
+            (ip_address, user_agent, detection_method, coins_found, processing_time_ms)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (
+            ip,
+            user_agent[:500] if user_agent else None,
+            result.get("detection_method"),
+            result.get("coins_found"),
+            processing_time_ms
+        ))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging split request: {e}")
+        conn.close()
+
+
+def get_analytics_stats():
+    """Get analytics statistics."""
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database not connected"}
+    
+    try:
+        cur = conn.cursor()
+        stats = {}
+        
+        # Total predictions
+        cur.execute("SELECT COUNT(*) FROM predictions")
+        stats["total_predictions"] = cur.fetchone()[0]
+        
+        # Total splits
+        cur.execute("SELECT COUNT(*) FROM split_requests")
+        stats["total_splits"] = cur.fetchone()[0]
+        
+        # Predictions today
+        cur.execute("""
+            SELECT COUNT(*) FROM predictions 
+            WHERE created_at >= CURRENT_DATE
+        """)
+        stats["predictions_today"] = cur.fetchone()[0]
+        
+        # Predictions last 7 days
+        cur.execute("""
+            SELECT COUNT(*) FROM predictions 
+            WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+        """)
+        stats["predictions_7d"] = cur.fetchone()[0]
+        
+        # Unique IPs today
+        cur.execute("""
+            SELECT COUNT(DISTINCT ip_address) FROM predictions 
+            WHERE created_at >= CURRENT_DATE
+        """)
+        stats["unique_ips_today"] = cur.fetchone()[0]
+        
+        # Unique IPs all time
+        cur.execute("SELECT COUNT(DISTINCT ip_address) FROM predictions")
+        stats["unique_ips_total"] = cur.fetchone()[0]
+        
+        # Average confidence
+        cur.execute("SELECT AVG(confidence) FROM predictions WHERE confidence IS NOT NULL")
+        avg_conf = cur.fetchone()[0]
+        stats["avg_confidence"] = round(avg_conf, 1) if avg_conf else None
+        
+        # Grade distribution (top 10)
+        cur.execute("""
+            SELECT predicted_grade, COUNT(*) as cnt 
+            FROM predictions 
+            WHERE predicted_grade IS NOT NULL
+            GROUP BY predicted_grade 
+            ORDER BY cnt DESC 
+            LIMIT 10
+        """)
+        stats["grade_distribution"] = [{"grade": r[0], "count": r[1]} for r in cur.fetchall()]
+        
+        # Top IPs (top 10)
+        cur.execute("""
+            SELECT ip_address, COUNT(*) as cnt 
+            FROM predictions 
+            WHERE ip_address IS NOT NULL
+            GROUP BY ip_address 
+            ORDER BY cnt DESC 
+            LIMIT 10
+        """)
+        stats["top_ips"] = [{"ip": r[0], "count": r[1]} for r in cur.fetchall()]
+        
+        # Average processing time
+        cur.execute("SELECT AVG(processing_time_ms) FROM predictions WHERE processing_time_ms IS NOT NULL")
+        avg_time = cur.fetchone()[0]
+        stats["avg_processing_time_ms"] = round(avg_time, 1) if avg_time else None
+        
+        # Predictions per hour (last 24 hours)
+        cur.execute("""
+            SELECT 
+                DATE_TRUNC('hour', created_at) as hour,
+                COUNT(*) as cnt
+            FROM predictions 
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY DATE_TRUNC('hour', created_at)
+            ORDER BY hour
+        """)
+        stats["hourly_predictions_24h"] = [
+            {"hour": r[0].isoformat(), "count": r[1]} for r in cur.fetchall()
+        ]
+        
+        cur.close()
+        conn.close()
+        return stats
+    except Exception as e:
+        conn.close()
+        return {"error": str(e)}
 
 # ============================================================================
 # MODEL ARCHITECTURE (must match training)
@@ -371,8 +687,8 @@ class CoinGrader:
 # WEB ENDPOINTS (FastAPI)
 # ============================================================================
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
@@ -380,6 +696,26 @@ web_app = FastAPI(title="Numisking Coin Grader")
 
 # Static files are mounted at /app/static in the container
 CONTAINER_STATIC_DIR = "/app/static"
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, handling proxies."""
+    # Check X-Forwarded-For header (set by proxies/load balancers)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    # Check X-Real-IP header
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip
+    # Fall back to direct client
+    return request.client.host if request.client else "unknown"
+
+
+@web_app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup."""
+    init_database()
 
 
 @web_app.get("/", response_class=HTMLResponse)
@@ -398,16 +734,24 @@ async def home():
 
 @web_app.post("/predict")
 async def predict(
+    request: Request,
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
     company: Optional[str] = Form(None),
-    async_mode: bool = Form(False, description="Return job_id for polling instead of waiting")
+    async_mode: bool = Form(False, description="Return job_id for polling instead of waiting"),
+    save_images: bool = Form(True, description="Save images for review (default True)")
 ):
     """Predict coin grade from uploaded images.
     
     If async_mode=True, returns immediately with a job_id that can be polled at /predict/{job_id}.
     If async_mode=False (default), waits for the result (uses async I/O, doesn't block other requests).
     """
+    start_time = time.time()
+    
+    # Get client info for logging
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")
+    
     grader = CoinGrader()
     
     obverse_bytes = await obverse.read()
@@ -416,10 +760,42 @@ async def predict(
     if async_mode:
         # Fire-and-forget: return job_id immediately for polling
         function_call = grader.predict.spawn(obverse_bytes, reverse_bytes, company)
-        return {"job_id": function_call.object_id, "status": "processing"}
+        job_id = function_call.object_id
+        
+        # Log async request (result will be logged when polled)
+        prediction_id = log_prediction(
+            ip=client_ip,
+            user_agent=user_agent,
+            result={"status": "async"},
+            processing_time_ms=int((time.time() - start_time) * 1000),
+            async_mode=True,
+            job_id=job_id,
+            has_images=save_images
+        )
+        
+        # Save images in background
+        if save_images and prediction_id:
+            save_images_worker.spawn(prediction_id, obverse_bytes, reverse_bytes)
+        
+        return {"job_id": job_id, "status": "processing"}
     else:
         # Async wait: doesn't block other requests thanks to .remote.aio()
         result = await grader.predict.remote.aio(obverse_bytes, reverse_bytes, company)
+        
+        # Log the prediction
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        prediction_id = log_prediction(
+            ip=client_ip,
+            user_agent=user_agent,
+            result=result,
+            processing_time_ms=processing_time_ms,
+            has_images=save_images
+        )
+        
+        # Save images in background (don't wait for it)
+        if save_images and prediction_id:
+            save_images_worker.spawn(prediction_id, obverse_bytes, reverse_bytes)
+        
         return result
 
 
@@ -551,26 +927,70 @@ def split_image_simple_modal(img):
     ]
 
 
-@web_app.post("/split-combined")
-async def split_combined(image: UploadFile = File(...)):
-    """
-    Split a combined TrueView/slab image into obverse and reverse.
+# ============================================================================
+# IMAGE STORAGE WORKER - Save prediction images to volume
+# ============================================================================
+
+@app.function(
+    image=image,
+    volumes={IMAGES_DIR: images_volume},
+    secrets=[db_secret],
+    cpu=0.5,
+    memory=256,
+    scaledown_window=60,
+)
+def save_images_worker(prediction_id: int, obverse_bytes: bytes, reverse_bytes: bytes):
+    """Save prediction images to the images volume."""
+    import os
     
-    Uses multiple detection strategies:
-    1. Contour detection with adaptive thresholding
-    2. Color segmentation for metallic objects
-    3. Simple geometric split (fallback)
+    try:
+        # Create directory for this prediction
+        pred_dir = f"{IMAGES_DIR}/{prediction_id}"
+        os.makedirs(pred_dir, exist_ok=True)
+        
+        # Save images
+        with open(f"{pred_dir}/obverse.jpg", "wb") as f:
+            f.write(obverse_bytes)
+        
+        with open(f"{pred_dir}/reverse.jpg", "wb") as f:
+            f.write(reverse_bytes)
+        
+        # Commit changes to volume
+        images_volume.commit()
+        
+        print(f"✅ Saved images for prediction {prediction_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving images for prediction {prediction_id}: {e}")
+        return False
+
+
+# ============================================================================
+# IMAGE SPLITTER - Dedicated CPU function for splitting combined images
+# ============================================================================
+
+@app.function(
+    image=image,
+    cpu=2,  # 2 CPU cores for image processing
+    memory=1024,  # 1GB RAM
+    scaledown_window=120,  # Keep warm for 2 minutes
+)
+@modal.concurrent(max_inputs=50)  # Handle many concurrent split requests
+def split_image_worker(image_bytes: bytes) -> dict:
+    """
+    CPU worker to split a combined TrueView/slab image into obverse and reverse.
+    
+    Runs on dedicated CPU containers, auto-scales independently from GPU workers.
     """
     import cv2
     import numpy as np
     import base64
     
-    image_bytes = await image.read()
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
     if img is None:
-        raise HTTPException(status_code=400, detail="Could not read image")
+        return {"error": "Could not read image"}
     
     height, width = img.shape[:2]
     
@@ -671,6 +1091,39 @@ async def split_combined(image: UploadFile = File(...)):
     }
 
 
+@web_app.post("/split-combined")
+async def split_combined(request: Request, image: UploadFile = File(...)):
+    """
+    Split a combined TrueView/slab image into obverse and reverse.
+
+    Offloads CPU-intensive work to a dedicated worker that auto-scales.
+    """
+    start_time = time.time()
+    
+    # Get client info for logging
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")
+    
+    image_bytes = await image.read()
+
+    # Offload to CPU worker - non-blocking async call
+    result = await split_image_worker.remote.aio(image_bytes)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    # Log the split request
+    processing_time_ms = int((time.time() - start_time) * 1000)
+    log_split_request(
+        ip=client_ip,
+        user_agent=user_agent,
+        result=result,
+        processing_time_ms=processing_time_ms
+    )
+
+    return result
+
+
 @web_app.get("/companies")
 async def get_companies():
     """Get list of supported grading companies."""
@@ -693,6 +1146,180 @@ async def health():
     return {"status": "healthy"}
 
 
+@web_app.get("/admin/stats")
+async def admin_stats(request: Request):
+    """
+    Get analytics statistics.
+    
+    Returns usage stats including:
+    - Total predictions and splits
+    - Predictions today / last 7 days
+    - Unique IPs
+    - Grade distribution
+    - Top users by IP
+    - Hourly predictions (last 24h)
+    """
+    stats = get_analytics_stats()
+    
+    if "error" in stats:
+        return JSONResponse(
+            content={"error": stats["error"], "message": "Database not available"},
+            status_code=503
+        )
+    
+    return stats
+
+
+@web_app.get("/admin/recent")
+async def admin_recent(limit: int = 50, offset: int = 0):
+    """
+    Get recent predictions.
+    
+    Returns the most recent predictions with details.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return JSONResponse(
+            content={"error": "Database not available"},
+            status_code=503
+        )
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                id, created_at, ip_address, predicted_grade, 
+                sheldon_grade, confidence, company_used, 
+                processing_time_ms, async_mode, has_images
+            FROM predictions
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+        """, (min(limit, 500), offset))
+        
+        columns = ['id', 'created_at', 'ip_address', 'predicted_grade', 
+                   'sheldon_grade', 'confidence', 'company_used', 
+                   'processing_time_ms', 'async_mode', 'has_images']
+        
+        predictions = []
+        for row in cur.fetchall():
+            pred = dict(zip(columns, row))
+            pred['created_at'] = pred['created_at'].isoformat() if pred['created_at'] else None
+            predictions.append(pred)
+        
+        cur.close()
+        conn.close()
+        return {"predictions": predictions}
+    except Exception as e:
+        conn.close()
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+
+
+@web_app.get("/admin/trends")
+async def admin_trends(period: str = "7d"):
+    """
+    Get prediction trends for charting.
+    
+    Periods: 24h (hourly), 7d (daily), 30d (daily)
+    """
+    conn = get_db_connection()
+    if not conn:
+        return JSONResponse(
+            content={"error": "Database not available"},
+            status_code=503
+        )
+    
+    try:
+        cur = conn.cursor()
+        
+        if period == "24h":
+            cur.execute("""
+                SELECT 
+                    DATE_TRUNC('hour', created_at) as period,
+                    COUNT(*) as count
+                FROM predictions 
+                WHERE created_at >= NOW() - INTERVAL '24 hours'
+                GROUP BY DATE_TRUNC('hour', created_at)
+                ORDER BY period
+            """)
+            trends = [{"label": r[0].strftime("%H:%M"), "count": r[1]} for r in cur.fetchall()]
+        elif period == "30d":
+            cur.execute("""
+                SELECT 
+                    DATE_TRUNC('day', created_at) as period,
+                    COUNT(*) as count
+                FROM predictions 
+                WHERE created_at >= NOW() - INTERVAL '30 days'
+                GROUP BY DATE_TRUNC('day', created_at)
+                ORDER BY period
+            """)
+            trends = [{"label": r[0].strftime("%b %d"), "count": r[1]} for r in cur.fetchall()]
+        else:  # 7d default
+            cur.execute("""
+                SELECT 
+                    DATE_TRUNC('day', created_at) as period,
+                    COUNT(*) as count
+                FROM predictions 
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                GROUP BY DATE_TRUNC('day', created_at)
+                ORDER BY period
+            """)
+            trends = [{"label": r[0].strftime("%a"), "count": r[1]} for r in cur.fetchall()]
+        
+        cur.close()
+        conn.close()
+        return {"trend": trends, "period": period}
+    except Exception as e:
+        conn.close()
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+
+
+@web_app.get("/admin/images/{prediction_id}/{side}")
+async def get_prediction_image_endpoint(prediction_id: int, side: str):
+    """
+    Get a prediction image (obverse or reverse).
+    """
+    from fastapi.responses import Response
+    import os
+    
+    if side not in ["obverse", "reverse"]:
+        raise HTTPException(status_code=400, detail="Side must be 'obverse' or 'reverse'")
+    
+    # Try to get image from volume
+    image_path = f"{IMAGES_DIR}/{prediction_id}/{side}.jpg"
+    
+    try:
+        if os.path.exists(image_path):
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            return Response(content=image_bytes, media_type="image/jpeg")
+        else:
+            raise HTTPException(status_code=404, detail="Image not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@web_app.get("/admin", response_class=HTMLResponse)
+async def admin_page():
+    """Serve the admin dashboard."""
+    admin_path = f"{CONTAINER_STATIC_DIR}/admin.html"
+    try:
+        with open(admin_path, "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(
+            content="<h1>Admin dashboard not found</h1><p>Redeploy with: modal deploy modal_app.py</p>",
+            status_code=404
+        )
+
+
 @web_app.get("/static/{filename:path}")
 async def serve_static(filename: str):
     """Serve static files (CSS, JS, images)."""
@@ -706,7 +1333,11 @@ async def serve_static(filename: str):
 # Mount the FastAPI app
 @app.function(
     image=image,
-    volumes={MODEL_DIR: model_volume},
+    volumes={
+        MODEL_DIR: model_volume,
+        IMAGES_DIR: images_volume,  # For serving prediction images
+    },
+    secrets=[db_secret],  # Include database credentials
     allow_concurrent_inputs=100
 )
 @modal.asgi_app()
