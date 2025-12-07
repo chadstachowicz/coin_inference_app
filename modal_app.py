@@ -484,8 +484,9 @@ def get_model_class():
 @app.cls(
     image=image,
     volumes={MODEL_DIR: model_volume},
-    gpu="T4",  # Use T4 GPU for fast inference (change to "A10G" for faster)
-    scaledown_window=300,  # Keep warm for 5 minutes
+    gpu="A10G",  # A10G GPU for faster inference
+    timeout=600,  # 10 minute timeout for cold starts
+    container_idle_timeout=600,  # Keep container warm for 10 minutes
 )
 @modal.concurrent(max_inputs=20)  # Handle multiple concurrent requests per GPU container
 class CoinGrader:
@@ -1264,9 +1265,8 @@ async def split_combined(
 @web_app.get("/companies")
 async def get_companies():
     """Get list of supported grading companies."""
-    grader = CoinGrader()
-    companies = grader.get_companies.remote()
-    return {"companies": companies}
+    # Static list - no need to hit GPU for this
+    return {"companies": ["PCGS", "NGC", "CACG"]}
 
 
 @web_app.get("/grades")
@@ -1526,8 +1526,8 @@ async def serve_static(filename: str):
         IMAGES_DIR: images_volume,  # For serving prediction images
     },
     secrets=[db_secret, admin_secret],  # Include database and admin credentials
-    allow_concurrent_inputs=100
 )
+@modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def fastapi_app():
     return web_app
