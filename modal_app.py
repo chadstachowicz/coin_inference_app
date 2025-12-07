@@ -123,7 +123,7 @@ def get_model_class():
     gpu="T4",  # Use T4 GPU for fast inference (change to "A10G" for faster)
     scaledown_window=300,  # Keep warm for 5 minutes
 )
-@modal.concurrent(max_inputs=10)  # Handle multiple concurrent requests
+@modal.concurrent(max_inputs=20)  # Handle multiple concurrent requests per GPU container
 class CoinGrader:
     """Modal class for coin grade prediction."""
     
@@ -400,16 +400,49 @@ async def home():
 async def predict(
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
-    company: Optional[str] = Form(None)
+    company: Optional[str] = Form(None),
+    async_mode: bool = Form(False, description="Return job_id for polling instead of waiting")
 ):
-    """Predict coin grade from uploaded images."""
+    """Predict coin grade from uploaded images.
+    
+    If async_mode=True, returns immediately with a job_id that can be polled at /predict/{job_id}.
+    If async_mode=False (default), waits for the result (uses async I/O, doesn't block other requests).
+    """
     grader = CoinGrader()
     
     obverse_bytes = await obverse.read()
     reverse_bytes = await reverse.read()
     
-    result = grader.predict.remote(obverse_bytes, reverse_bytes, company)
-    return result
+    if async_mode:
+        # Fire-and-forget: return job_id immediately for polling
+        function_call = grader.predict.spawn(obverse_bytes, reverse_bytes, company)
+        return {"job_id": function_call.object_id, "status": "processing"}
+    else:
+        # Async wait: doesn't block other requests thanks to .remote.aio()
+        result = await grader.predict.remote.aio(obverse_bytes, reverse_bytes, company)
+        return result
+
+
+@web_app.get("/predict/{job_id}")
+async def get_prediction_result(job_id: str):
+    """Poll for prediction result by job_id.
+    
+    Returns status: 'processing', 'completed', or 'failed'.
+    When completed, includes the full prediction result.
+    """
+    from modal.functions import FunctionCall
+    
+    try:
+        function_call = FunctionCall.from_id(job_id)
+        
+        try:
+            # Try to get result without blocking (timeout=0)
+            result = function_call.get(timeout=0)
+            return {"status": "completed", "result": result}
+        except TimeoutError:
+            return {"status": "processing", "job_id": job_id}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 
 def detect_coins_contour_modal(img, cv2, np):
