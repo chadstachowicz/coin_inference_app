@@ -7,13 +7,25 @@ Deploy with:
 Run locally:
     modal serve modal_app.py
 
-Setup database secret (one-time):
+Setup secrets (one-time):
     modal secret create neon-db DATABASE_URL="postgresql://..."
+    modal secret create api_keys API_KEY="your-secure-api-key"
 
-Test endpoint:
+Test web endpoint (form upload):
     curl -X POST "https://YOUR_APP_URL/predict" \
         -F "obverse=@coin_front.jpg" \
-        -F "reverse=@coin_back.jpg"
+        -F "reverse=@coin_back.jpg" \
+        -F "model=standard"
+
+Test JSON API (with API key):
+    curl -X POST "https://YOUR_APP_URL/api/predict" \
+        -H "X-API-Key: your-api-key" \
+        -H "Content-Type: application/json" \
+        -d '{"obverse_base64": "<base64>", "reverse_base64": "<base64>", "model": "standard"}'
+
+Available models:
+    - standard: ResNet-50 backbone (fast)
+    - advanced: ConvNeXt backbone (accurate)
 """
 
 import modal
@@ -42,6 +54,10 @@ db_secret = modal.Secret.from_name("neon-db")
 
 # Admin credentials secret
 admin_secret = modal.Secret.from_name("custom-secret")
+
+# API key secret (create with: modal secret create api_keys API_KEY="your-api-key")
+# You can have multiple API keys separated by commas
+api_key_secret = modal.Secret.from_name("api_keys")
 
 # Get path to static files
 LOCAL_STATIC_DIR = Path(__file__).parent / "static"
@@ -106,6 +122,7 @@ def init_database():
                 sheldon_grade INTEGER,
                 confidence FLOAT,
                 company_used VARCHAR(20),
+                model_used VARCHAR(50),
                 raw_score FLOAT,
                 processing_time_ms INTEGER,
                 
@@ -123,6 +140,18 @@ def init_database():
                                WHERE table_name='predictions' AND column_name='has_images') 
                 THEN 
                     ALTER TABLE predictions ADD COLUMN has_images BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+        """)
+        
+        # Add model_used column if it doesn't exist (for existing tables)
+        cur.execute("""
+            DO $$ 
+            BEGIN 
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                               WHERE table_name='predictions' AND column_name='model_used') 
+                THEN 
+                    ALTER TABLE predictions ADD COLUMN model_used VARCHAR(50);
                 END IF;
             END $$;
         """)
@@ -191,8 +220,8 @@ def log_prediction(ip: str, user_agent: str, result: dict, processing_time_ms: i
         cur.execute("""
             INSERT INTO predictions 
             (ip_address, user_agent, predicted_grade, sheldon_grade, confidence, 
-             company_used, raw_score, processing_time_ms, async_mode, job_id, has_images)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             company_used, model_used, raw_score, processing_time_ms, async_mode, job_id, has_images)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             ip,
@@ -201,6 +230,7 @@ def log_prediction(ip: str, user_agent: str, result: dict, processing_time_ms: i
             result.get("sheldon_grade"),
             result.get("confidence"),
             result.get("company_used"),
+            result.get("model_used"),
             result.get("raw_score"),
             processing_time_ms,
             async_mode,
@@ -414,8 +444,28 @@ def get_analytics_stats():
 # MODEL ARCHITECTURE (must match training)
 # ============================================================================
 
-def get_model_class():
-    """Define the model class inside a function to avoid import issues."""
+# Model registry - maps model_type to (model_file, friendly_name, description)
+MODEL_REGISTRY = {
+    "standard": {
+        "file": "coin_ordinal_best.pth",
+        "name": "Standard",
+        "description": "ResNet-50 backbone - Fast and reliable",
+        "backbone": "resnet50"
+    },
+    "advanced": {
+        "file": "coin_convnext_best.pth",
+        "name": "Advanced",
+        "description": "ConvNeXt backbone - Higher accuracy",
+        "backbone": "convnext_small"
+    }
+}
+
+# Default model type
+DEFAULT_MODEL_TYPE = "standard"
+
+
+def get_resnet_model_class():
+    """Define the ResNet model class inside a function to avoid import issues."""
     import torch
     import torch.nn as nn
     import torchvision.models as models
@@ -477,6 +527,106 @@ def get_model_class():
     return OrdinalRegressionResNet
 
 
+def get_convnext_model_class():
+    """Define the ConvNeXt model class inside a function to avoid import issues."""
+    import torch
+    import torch.nn as nn
+    from torchvision.models import convnext_small, ConvNeXt_Small_Weights
+    
+    class OrdinalRegressionConvNeXt(nn.Module):
+        """
+        ConvNeXt-Small for ordinal regression.
+        
+        ConvNeXt-Small specs:
+        - Feature dimension: 768 (vs 2048 for ResNet-50)
+        - ~50M parameters
+        - Better accuracy than ResNet at similar compute
+        """
+        
+        def __init__(self, num_companies=None, company_embedding_dim=32, freeze_backbone=False):
+            super(OrdinalRegressionConvNeXt, self).__init__()
+            
+            self.use_company = num_companies is not None
+            
+            # Company embedding
+            if self.use_company:
+                self.company_embedding = nn.Embedding(num_companies, company_embedding_dim)
+            
+            # Load pretrained ConvNeXt-Small
+            weights = ConvNeXt_Small_Weights.IMAGENET1K_V1
+            obverse_convnext = convnext_small(weights=weights)
+            reverse_convnext = convnext_small(weights=weights)
+            
+            # ConvNeXt structure: features -> avgpool -> classifier
+            self.obverse_features = obverse_convnext.features
+            self.obverse_avgpool = obverse_convnext.avgpool
+            
+            self.reverse_features = reverse_convnext.features
+            self.reverse_avgpool = reverse_convnext.avgpool
+            
+            # ConvNeXt-Small outputs 768-dimensional features
+            self.feature_dim = 768
+            
+            # Fusion layer
+            fusion_input_dim = self.feature_dim * 2
+            if self.use_company:
+                fusion_input_dim += company_embedding_dim
+            
+            # Use LayerNorm instead of BatchNorm to match ConvNeXt style
+            self.fusion = nn.Sequential(
+                nn.Linear(fusion_input_dim, 1024),
+                nn.LayerNorm(1024),
+                nn.GELU(),
+                nn.Dropout(0.2)
+            )
+            
+            # Regression head (outputs single value in [0, 1])
+            self.regression_head = nn.Sequential(
+                nn.Linear(1024, 512),
+                nn.LayerNorm(512),
+                nn.GELU(),
+                nn.Dropout(0.2),
+                nn.Linear(512, 256),
+                nn.LayerNorm(256),
+                nn.GELU(),
+                nn.Dropout(0.2),
+                nn.Linear(256, 1),
+                nn.Sigmoid()
+            )
+        
+        def forward(self, obverse, reverse, company_idx=None):
+            # Encode images through ConvNeXt
+            obverse_feat = self.obverse_avgpool(self.obverse_features(obverse))
+            obverse_feat = obverse_feat.view(obverse.size(0), -1)
+            
+            reverse_feat = self.reverse_avgpool(self.reverse_features(reverse))
+            reverse_feat = reverse_feat.view(reverse.size(0), -1)
+            
+            # Concatenate features
+            combined = torch.cat([obverse_feat, reverse_feat], dim=1)
+            
+            # Add company embedding if available
+            if self.use_company and company_idx is not None:
+                company_emb = self.company_embedding(company_idx)
+                combined = torch.cat([combined, company_emb], dim=1)
+            
+            # Fusion + regression
+            fused = self.fusion(combined)
+            output = self.regression_head(fused).squeeze(-1)
+            
+            return output
+    
+    return OrdinalRegressionConvNeXt
+
+
+def get_model_class(backbone: str = "resnet50"):
+    """Get the appropriate model class based on backbone type."""
+    if backbone == "convnext_small":
+        return get_convnext_model_class()
+    else:
+        return get_resnet_model_class()
+
+
 # ============================================================================
 # COIN GRADER CLASS
 # ============================================================================
@@ -484,78 +634,120 @@ def get_model_class():
 @app.cls(
     image=image,
     volumes={MODEL_DIR: model_volume},
+    secrets=[admin_secret],  # For MODEL_NAME config
     gpu="A10G",  # A10G GPU for faster inference
     timeout=600,  # 10 minute timeout for cold starts
-    container_idle_timeout=600,  # Keep container warm for 10 minutes
+    scaledown_window=600,  # Keep container warm for 10 minutes
 )
 @modal.concurrent(max_inputs=20)  # Handle multiple concurrent requests per GPU container
 class CoinGrader:
-    """Modal class for coin grade prediction."""
+    """Modal class for coin grade prediction with support for multiple model types."""
     
-    # Class-level state
-    model = None
+    # Class-level state - cache for loaded models
+    models_cache = {}  # {model_type: {"model": model, "config": config}}
     transform = None
-    company_to_idx = None
-    use_company = False
-    valid_grades = None
-    num_steps = None
-    encoding_type = "step_based"
+    device = None
     
     @modal.enter()
-    def load_model(self):
-        """Load model when container starts."""
+    def initialize(self):
+        """Initialize the grader when container starts."""
         import torch
         from torchvision import transforms
         
-        print("🔄 Loading coin grading model...")
+        print("🔄 Initializing coin grader...")
         
-        model_path = Path(MODEL_DIR) / "coin_ordinal_best.pth"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        if not model_path.exists():
-            print(f"❌ Model not found at {model_path}")
-            print("Please upload your model first with:")
-            print("  modal volume put coin-grader-models coin_ordinal_best.pth")
-            raise FileNotFoundError(f"Model not found: {model_path}")
-        
-        # Load checkpoint
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoint = torch.load(model_path, map_location=device)
-        
-        # Extract config from checkpoint
-        self.use_company = checkpoint.get('use_company', False)
-        self.company_to_idx = checkpoint.get('company_to_idx')
-        self.encoding_type = checkpoint.get('encoding', 'step_based')
-        
-        if self.encoding_type == 'step_based':
-            self.valid_grades = checkpoint.get('valid_grades', 
-                [2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45,
-                 50, 53, 55, 58, 60, 61, 62, 63, 64, 65, 66, 67, 68])
-            self.num_steps = len(self.valid_grades)
-        
-        # Build model
-        OrdinalRegressionResNet = get_model_class()
-        num_companies = len(self.company_to_idx) if self.use_company and self.company_to_idx else None
-        
-        self.model = OrdinalRegressionResNet(
-            num_companies=num_companies,
-            company_embedding_dim=32,
-            freeze_backbone=False
-        )
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.model = self.model.to(device)
-        self.model.eval()
-        
-        # Image transform
+        # Image transform (same for all models)
         self.transform = transforms.Compose([
             transforms.Resize((512, 512)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        self.device = device
-        print(f"✅ Model loaded successfully on {device}")
-        print(f"   Encoding: {self.encoding_type}")
-        print(f"   Company conditioning: {self.use_company}")
+        # Pre-load the default model
+        self._load_model(DEFAULT_MODEL_TYPE)
+        
+        print(f"✅ Coin grader initialized on {self.device}")
+    
+    def _load_model(self, model_type: str):
+        """Load a specific model type if not already cached."""
+        import torch
+        
+        if model_type in self.models_cache:
+            return self.models_cache[model_type]
+        
+        if model_type not in MODEL_REGISTRY:
+            print(f"⚠️ Unknown model type: {model_type}, falling back to {DEFAULT_MODEL_TYPE}")
+            model_type = DEFAULT_MODEL_TYPE
+        
+        model_info = MODEL_REGISTRY[model_type]
+        model_path = Path(MODEL_DIR) / model_info["file"]
+        
+        print(f"🔄 Loading {model_info['name']} model ({model_info['backbone']})...")
+        
+        if not model_path.exists():
+            print(f"❌ Model not found at {model_path}")
+            print("Please upload your model first with:")
+            print(f"  modal volume put coin-grader-models /path/to/{model_info['file']}")
+            raise FileNotFoundError(f"Model not found: {model_path}")
+        
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location=self.device)
+        
+        # Extract config from checkpoint
+        use_company = checkpoint.get('use_company', False)
+        company_to_idx = checkpoint.get('company_to_idx')
+        encoding_type = checkpoint.get('encoding', 'step_based')
+        backbone = checkpoint.get('backbone', model_info['backbone'])
+        
+        valid_grades = None
+        num_steps = None
+        if encoding_type == 'step_based':
+            valid_grades = checkpoint.get('valid_grades', 
+                [2, 3, 4, 6, 8, 10, 12, 15, 20, 25, 30, 35, 40, 45,
+                 50, 53, 55, 58, 62, 63, 64, 65, 66, 67, 68])
+            num_steps = len(valid_grades)
+        
+        # Build model with correct backbone
+        ModelClass = get_model_class(backbone)
+        num_companies = len(company_to_idx) if use_company and company_to_idx else None
+        
+        model = ModelClass(
+            num_companies=num_companies,
+            company_embedding_dim=32,
+            freeze_backbone=False
+        )
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model = model.to(self.device)
+        model.eval()
+        
+        # Cache the model and its config
+        self.models_cache[model_type] = {
+            "model": model,
+            "config": {
+                "use_company": use_company,
+                "company_to_idx": company_to_idx,
+                "encoding_type": encoding_type,
+                "valid_grades": valid_grades,
+                "num_steps": num_steps,
+                "backbone": backbone,
+                "name": model_info["name"]
+            }
+        }
+        
+        print(f"✅ {model_info['name']} model loaded successfully")
+        print(f"   Backbone: {backbone}")
+        print(f"   Encoding: {encoding_type}")
+        print(f"   Company conditioning: {use_company}")
+        
+        return self.models_cache[model_type]
+    
+    def _get_model_and_config(self, model_type: str):
+        """Get model and config, loading if necessary."""
+        if model_type not in self.models_cache:
+            self._load_model(model_type)
+        return self.models_cache[model_type]
     
     def preprocess_coin_image(self, pil_image, output_size=512):
         """Hough circle detection, circular mask, and centering on white background."""
@@ -631,13 +823,13 @@ class CoinGrader:
         result_rgb = cv2.cvtColor(white_bg, cv2.COLOR_BGR2RGB)
         return Image.fromarray(result_rgb)
     
-    def denormalize_grade(self, normalized):
+    def denormalize_grade(self, normalized, config):
         """Convert normalized prediction to Sheldon grade."""
-        if self.encoding_type == 'step_based':
-            step = normalized * (self.num_steps - 1)
+        if config["encoding_type"] == 'step_based':
+            step = normalized * (config["num_steps"] - 1)
             step_idx = int(round(step))
-            step_idx = max(0, min(step_idx, self.num_steps - 1))
-            return self.valid_grades[step_idx]
+            step_idx = max(0, min(step_idx, config["num_steps"] - 1))
+            return config["valid_grades"][step_idx]
         else:
             return normalized * 69 + 1  # 1-70 scale
     
@@ -666,10 +858,19 @@ class CoinGrader:
             return f"P{grade:02d}"
     
     @modal.method()
-    def predict(self, obverse_bytes: bytes, reverse_bytes: bytes, company: str = None) -> dict:
-        """Predict coin grade from image bytes."""
+    def predict(self, obverse_bytes: bytes, reverse_bytes: bytes, company: str = None, model_type: str = None) -> dict:
+        """Predict coin grade from image bytes using the specified model."""
         import torch
         from PIL import Image
+        
+        # Use default model if not specified
+        if model_type is None:
+            model_type = DEFAULT_MODEL_TYPE
+        
+        # Get the model and config
+        model_data = self._get_model_and_config(model_type)
+        model = model_data["model"]
+        config = model_data["config"]
         
         # Load and preprocess images
         obverse_img = Image.open(io.BytesIO(obverse_bytes)).convert("RGB")
@@ -685,25 +886,25 @@ class CoinGrader:
         company_idx_tensor = None
         company_used = None
         
-        if self.use_company and self.company_to_idx:
-            if company and company.upper() in self.company_to_idx:
-                company_idx_tensor = torch.tensor([self.company_to_idx[company.upper()]]).to(self.device)
+        if config["use_company"] and config["company_to_idx"]:
+            if company and company.upper() in config["company_to_idx"]:
+                company_idx_tensor = torch.tensor([config["company_to_idx"][company.upper()]]).to(self.device)
                 company_used = company.upper()
             else:
-                default = 'PCGS' if 'PCGS' in self.company_to_idx else list(self.company_to_idx.keys())[0]
-                company_idx_tensor = torch.tensor([self.company_to_idx[default]]).to(self.device)
+                default = 'PCGS' if 'PCGS' in config["company_to_idx"] else list(config["company_to_idx"].keys())[0]
+                company_idx_tensor = torch.tensor([config["company_to_idx"][default]]).to(self.device)
                 company_used = f"{default} (default)"
         
         # Predict
         with torch.no_grad():
-            prediction = self.model(obverse_tensor, reverse_tensor, company_idx_tensor)
+            prediction = model(obverse_tensor, reverse_tensor, company_idx_tensor)
             normalized_pred = prediction.item()
-            sheldon_grade = self.denormalize_grade(normalized_pred)
+            sheldon_grade = self.denormalize_grade(normalized_pred, config)
             grade_name = self.format_grade_name(sheldon_grade)
         
         # Confidence
-        if self.encoding_type == 'step_based':
-            step_pos = normalized_pred * (self.num_steps - 1)
+        if config["encoding_type"] == 'step_based':
+            step_pos = normalized_pred * (config["num_steps"] - 1)
             confidence = 1.0 - abs(step_pos - round(step_pos))
             confidence = max(0.5, confidence)
         else:
@@ -714,34 +915,66 @@ class CoinGrader:
             "sheldon_grade": int(sheldon_grade),
             "confidence": round(confidence * 100, 1),
             "raw_score": round(normalized_pred, 4),
-            "company_used": company_used
+            "company_used": company_used,
+            "model_used": config["name"]
         }
     
     @modal.method()
-    def get_companies(self) -> list:
-        """Return list of supported grading companies."""
-        if self.company_to_idx:
-            return list(self.company_to_idx.keys())
+    def get_companies(self, model_type: str = None) -> list:
+        """Return list of supported grading companies for a model."""
+        if model_type is None:
+            model_type = DEFAULT_MODEL_TYPE
+        
+        model_data = self._get_model_and_config(model_type)
+        config = model_data["config"]
+        
+        if config["company_to_idx"]:
+            return list(config["company_to_idx"].keys())
         return []
     
     @modal.method()
-    def get_grades(self) -> list:
-        """Return list of valid grades."""
-        if self.valid_grades:
-            return [{"sheldon": g, "name": self.format_grade_name(g)} for g in self.valid_grades]
+    def get_grades(self, model_type: str = None) -> list:
+        """Return list of valid grades for a model."""
+        if model_type is None:
+            model_type = DEFAULT_MODEL_TYPE
+            
+        model_data = self._get_model_and_config(model_type)
+        config = model_data["config"]
+        
+        if config["valid_grades"]:
+            return [{"sheldon": g, "name": self.format_grade_name(g)} for g in config["valid_grades"]]
         return []
+    
+    @modal.method()
+    def get_available_models(self) -> list:
+        """Return list of available models with their info."""
+        import os
+        
+        available = []
+        for model_type, info in MODEL_REGISTRY.items():
+            model_path = Path(MODEL_DIR) / info["file"]
+            is_available = model_path.exists()
+            available.append({
+                "id": model_type,
+                "name": info["name"],
+                "description": info["description"],
+                "available": is_available
+            })
+        return available
 
 
 # ============================================================================
 # WEB ENDPOINTS (FastAPI)
 # ============================================================================
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends, Header
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, List
 import secrets
+import base64
 
 web_app = FastAPI(title="Numisking Coin Grader")
 
@@ -750,6 +983,100 @@ CONTAINER_STATIC_DIR = "/app/static"
 
 # HTTP Basic Auth for admin endpoints
 security = HTTPBasic()
+
+
+# ============================================================================
+# API KEY AUTHENTICATION
+# ============================================================================
+
+def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Verify API key for programmatic access.
+    
+    API keys should be set in the Modal secret 'api-keys' with key API_KEY.
+    Multiple keys can be separated by commas.
+    """
+    import os
+    
+    if not x_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing API key. Include 'X-API-Key' header.",
+            headers={"WWW-Authenticate": "API-Key"},
+        )
+    
+    # Read valid API keys from environment
+    valid_keys_str = os.environ.get("API_KEY", "")
+    if not valid_keys_str:
+        raise HTTPException(
+            status_code=500,
+            detail="API keys not configured. Create Modal secret 'api_keys' with API_KEY.",
+        )
+    
+    # Support multiple comma-separated API keys
+    valid_keys = [k.strip() for k in valid_keys_str.split(",") if k.strip()]
+    
+    # Constant-time comparison for each key
+    for valid_key in valid_keys:
+        if secrets.compare_digest(x_api_key, valid_key):
+            return x_api_key
+    
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid API key",
+        headers={"WWW-Authenticate": "API-Key"},
+    )
+
+
+# ============================================================================
+# API REQUEST/RESPONSE MODELS
+# ============================================================================
+
+class APIPredictRequest(BaseModel):
+    """Request model for JSON API prediction endpoint."""
+    obverse_base64: str = Field(..., description="Base64-encoded obverse (front) image")
+    reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
+    model: Optional[str] = Field("standard", description="Model type: 'standard' (ResNet-50) or 'advanced' (ConvNeXt)")
+    company: Optional[str] = Field(None, description="Grading company (PCGS, NGC, CACG)")
+    save_images: Optional[bool] = Field(False, description="Save images for review")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "obverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+                "reverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+                "model": "standard",
+                "company": "PCGS",
+                "save_images": False
+            }
+        }
+
+
+class APIPredictResponse(BaseModel):
+    """Response model for JSON API prediction endpoint."""
+    prediction: str = Field(..., description="Grade name (e.g., MS64, VF30)")
+    sheldon_grade: int = Field(..., description="Sheldon scale numeric grade (1-70)")
+    confidence: float = Field(..., description="Confidence percentage (0-100)")
+    raw_score: float = Field(..., description="Raw model output (0-1)")
+    company_used: Optional[str] = Field(None, description="Grading company used")
+    model_used: str = Field(..., description="Model name used for prediction")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "prediction": "MS64",
+                "sheldon_grade": 64,
+                "confidence": 87.5,
+                "raw_score": 0.8234,
+                "company_used": "PCGS",
+                "model_used": "Standard"
+            }
+        }
+
+
+class APIErrorResponse(BaseModel):
+    """Error response model."""
+    error: str = Field(..., description="Error message")
+    detail: Optional[str] = Field(None, description="Additional error details")
 
 
 def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
@@ -818,10 +1145,15 @@ async def predict(
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
     company: Optional[str] = Form(None),
+    model: Optional[str] = Form(None, description="Model type: 'standard' or 'advanced'"),
     async_mode: bool = Form(False, description="Return job_id for polling instead of waiting"),
     save_images: bool = Form(True, description="Save images for review (default True)")
 ):
     """Predict coin grade from uploaded images.
+    
+    Model options:
+    - 'standard': ResNet-50 backbone (fast and reliable)
+    - 'advanced': ConvNeXt backbone (higher accuracy)
     
     If async_mode=True, returns immediately with a job_id that can be polled at /predict/{job_id}.
     If async_mode=False (default), waits for the result (uses async I/O, doesn't block other requests).
@@ -837,9 +1169,12 @@ async def predict(
     obverse_bytes = await obverse.read()
     reverse_bytes = await reverse.read()
     
+    # Validate and default model type
+    model_type = model if model in MODEL_REGISTRY else DEFAULT_MODEL_TYPE
+    
     if async_mode:
         # Fire-and-forget: return job_id immediately for polling
-        function_call = grader.predict.spawn(obverse_bytes, reverse_bytes, company)
+        function_call = grader.predict.spawn(obverse_bytes, reverse_bytes, company, model_type)
         job_id = function_call.object_id
         
         # Log async request (result will be logged when polled)
@@ -860,7 +1195,7 @@ async def predict(
         return {"job_id": job_id, "status": "processing"}
     else:
         # Async wait: doesn't block other requests thanks to .remote.aio()
-        result = await grader.predict.remote.aio(obverse_bytes, reverse_bytes, company)
+        result = await grader.predict.remote.aio(obverse_bytes, reverse_bytes, company, model_type)
         
         # Log the prediction
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -899,6 +1234,193 @@ async def get_prediction_result(job_id: str):
             return {"status": "processing", "job_id": job_id}
     except Exception as e:
         return {"status": "failed", "error": str(e)}
+
+
+# ============================================================================
+# JSON API ENDPOINT (API Key Authentication)
+# ============================================================================
+
+@web_app.post(
+    "/api/predict",
+    response_model=APIPredictResponse,
+    responses={
+        401: {"model": APIErrorResponse, "description": "Invalid or missing API key"},
+        400: {"model": APIErrorResponse, "description": "Invalid request (bad images, etc.)"},
+        500: {"model": APIErrorResponse, "description": "Server error"},
+    },
+    tags=["API"],
+    summary="Predict coin grade (JSON API)",
+    description="""
+Predict coin grade from base64-encoded images using API key authentication.
+
+## Authentication
+Include your API key in the `X-API-Key` header.
+
+## Models
+- `standard`: ResNet-50 backbone - Fast and reliable
+- `advanced`: ConvNeXt backbone - Higher accuracy
+
+## Example Request
+```bash
+curl -X POST "https://YOUR_APP_URL/api/predict" \\
+    -H "X-API-Key: your-api-key" \\
+    -H "Content-Type: application/json" \\
+    -d '{
+        "obverse_base64": "<base64-encoded-image>",
+        "reverse_base64": "<base64-encoded-image>",
+        "model": "standard",
+        "company": "PCGS"
+    }'
+```
+
+## Python Example
+```python
+import requests
+import base64
+
+# Load images
+with open("obverse.jpg", "rb") as f:
+    obverse_b64 = base64.b64encode(f.read()).decode()
+with open("reverse.jpg", "rb") as f:
+    reverse_b64 = base64.b64encode(f.read()).decode()
+
+response = requests.post(
+    "https://YOUR_APP_URL/api/predict",
+    headers={"X-API-Key": "your-api-key"},
+    json={
+        "obverse_base64": obverse_b64,
+        "reverse_base64": reverse_b64,
+        "model": "advanced",  # or "standard"
+        "company": "PCGS"
+    }
+)
+print(response.json())
+```
+"""
+)
+async def api_predict(
+    request: Request,
+    body: APIPredictRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    JSON API endpoint for coin grade prediction with API key authentication.
+    
+    Accepts base64-encoded images and returns grade prediction.
+    """
+    start_time = time.time()
+    
+    # Get client info for logging
+    client_ip = get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")
+    
+    try:
+        # Decode base64 images
+        try:
+            obverse_bytes = base64.b64decode(body.obverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for obverse image: {str(e)}"
+            )
+        
+        try:
+            reverse_bytes = base64.b64decode(body.reverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for reverse image: {str(e)}"
+            )
+        
+        # Validate image sizes (basic check)
+        if len(obverse_bytes) < 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Obverse image appears to be too small or invalid"
+            )
+        if len(reverse_bytes) < 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Reverse image appears to be too small or invalid"
+            )
+        
+        # Validate and default model type
+        model_type = body.model if body.model in MODEL_REGISTRY else DEFAULT_MODEL_TYPE
+        
+        # Create grader and run prediction
+        grader = CoinGrader()
+        result = await grader.predict.remote.aio(
+            obverse_bytes, 
+            reverse_bytes, 
+            body.company, 
+            model_type
+        )
+        
+        # Log the prediction
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        prediction_id = log_prediction(
+            ip=client_ip,
+            user_agent=f"API: {user_agent}",  # Mark as API request
+            result=result,
+            processing_time_ms=processing_time_ms,
+            has_images=body.save_images
+        )
+        
+        # Save images if requested
+        if body.save_images and prediction_id:
+            save_images_worker.spawn(prediction_id, obverse_bytes, reverse_bytes)
+        
+        return APIPredictResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing prediction: {str(e)}"
+        )
+
+
+@web_app.get(
+    "/api/models",
+    tags=["API"],
+    summary="List available models",
+    description="Returns list of available grading models with their descriptions."
+)
+async def api_list_models(api_key: str = Depends(verify_api_key)):
+    """List available models (API key required)."""
+    models = [
+        {
+            "id": model_type,
+            "name": info["name"],
+            "description": info["description"],
+            "backbone": info["backbone"],
+        }
+        for model_type, info in MODEL_REGISTRY.items()
+    ]
+    return {"models": models, "default": DEFAULT_MODEL_TYPE}
+
+
+@web_app.get(
+    "/api/companies",
+    tags=["API"],
+    summary="List supported grading companies",
+    description="Returns list of supported coin grading companies."
+)
+async def api_list_companies(api_key: str = Depends(verify_api_key)):
+    """List supported grading companies (API key required)."""
+    return {"companies": ["PCGS", "NGC", "CACG"]}
+
+
+@web_app.get(
+    "/api/health",
+    tags=["API"],
+    summary="API health check",
+    description="Check if API is healthy and authentication is working."
+)
+async def api_health(api_key: str = Depends(verify_api_key)):
+    """Health check with API key verification."""
+    return {"status": "healthy", "authenticated": True}
 
 
 def detect_coins_contour_modal(img, cv2, np):
@@ -1262,6 +1784,23 @@ async def split_combined(
     return result
 
 
+@web_app.get("/models")
+async def get_models():
+    """Get list of available grading models."""
+    # Return static list - model availability is checked when loading
+    # This avoids spinning up a GPU container just to list models
+    models = [
+        {
+            "id": model_type,
+            "name": info["name"],
+            "description": info["description"],
+            "available": True  # Assume available, will fail gracefully if not
+        }
+        for model_type, info in MODEL_REGISTRY.items()
+    ]
+    return {"models": models, "default": DEFAULT_MODEL_TYPE}
+
+
 @web_app.get("/companies")
 async def get_companies():
     """Get list of supported grading companies."""
@@ -1326,7 +1865,7 @@ async def admin_recent(limit: int = 50, offset: int = 0, username: str = Depends
         cur.execute("""
             SELECT 
                 id, created_at, ip_address, predicted_grade, 
-                sheldon_grade, confidence, company_used, 
+                sheldon_grade, confidence, company_used, model_used,
                 processing_time_ms, async_mode, has_images
             FROM predictions
             ORDER BY created_at DESC
@@ -1334,7 +1873,7 @@ async def admin_recent(limit: int = 50, offset: int = 0, username: str = Depends
         """, (min(limit, 500), offset))
         
         columns = ['id', 'created_at', 'ip_address', 'predicted_grade', 
-                   'sheldon_grade', 'confidence', 'company_used', 
+                   'sheldon_grade', 'confidence', 'company_used', 'model_used',
                    'processing_time_ms', 'async_mode', 'has_images']
         
         predictions = []
@@ -1525,7 +2064,7 @@ async def serve_static(filename: str):
         MODEL_DIR: model_volume,
         IMAGES_DIR: images_volume,  # For serving prediction images
     },
-    secrets=[db_secret, admin_secret],  # Include database and admin credentials
+    secrets=[db_secret, admin_secret, api_key_secret],  # Include database, admin, and API key credentials
 )
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
@@ -1546,8 +2085,22 @@ def main():
     print("  modal deploy modal_app.py")
     print("\nTo run locally:")
     print("  modal serve modal_app.py")
-    print("\nTo upload your model:")
+    print("\nTo upload your models:")
     print("  modal volume put coin-grader-models /path/to/coin_ordinal_best.pth")
+    print("  modal volume put coin-grader-models /path/to/coin_convnext_best.pth")
+    print("\nTo set up API keys (for JSON API access):")
+    print("  modal secret create api_keys API_KEY=\"your-secure-api-key\"")
+    print("  # For multiple keys: API_KEY=\"key1,key2,key3\"")
     print("\nAfter deployment, your app will be at:")
     print("  https://YOUR_USERNAME--numisking-coin-grader-fastapi-app.modal.run")
+    print("\nAPI Endpoints:")
+    print("  POST /api/predict   - JSON API with API key auth")
+    print("  GET  /api/models    - List available models")
+    print("  GET  /api/companies - List supported companies")
+    print("  GET  /api/health    - Health check")
+    print("\nExample API call:")
+    print('  curl -X POST "https://YOUR_URL/api/predict" \\')
+    print('       -H "X-API-Key: your-api-key" \\')
+    print('       -H "Content-Type: application/json" \\')
+    print('       -d \'{"obverse_base64": "...", "reverse_base64": "...", "model": "standard"}\'')
 

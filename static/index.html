@@ -478,7 +478,7 @@
       display: none;
     }
 
-    /* Company Select */
+    /* Model Select */
     .company-section {
       margin-top: 2rem;
       text-align: center;
@@ -491,12 +491,21 @@
       background: var(--white);
       font-size: 1rem;
       color: var(--gray-800);
-      min-width: 250px;
+      min-width: 280px;
       cursor: pointer;
     }
 
     .company-select:focus {
       outline: none;
+      border-color: var(--gold-primary);
+    }
+
+    .model-select {
+      border-color: var(--gold-light);
+      background: linear-gradient(to right, var(--white) 0%, #FFFDF7 100%);
+    }
+
+    .model-select:focus {
       border-color: var(--gold-primary);
     }
 
@@ -570,6 +579,13 @@
       font-size: 1.1rem;
       color: var(--gray-600);
       margin-top: 0.5rem;
+    }
+
+    .model-used {
+      font-size: 0.9rem;
+      color: var(--gold-dark);
+      margin-top: 0.5rem;
+      font-weight: 500;
     }
 
     .confidence-section {
@@ -1247,10 +1263,10 @@
       </div>
     </div>
 
-    <!-- Company Select -->
+    <!-- Model Select -->
     <div class="company-section">
-      <select class="company-select" id="companySelect">
-        <option value="">Grading Company (optional)</option>
+      <select class="company-select model-select" id="modelSelect">
+        <option value="standard">Standard Model</option>
       </select>
     </div>
 
@@ -1265,6 +1281,7 @@
     <div class="results-card" id="resultsCard">
       <div class="grade-result" id="gradeResult">MS64</div>
       <div class="grade-sheldon" id="gradeSheldon">Sheldon Scale: 64</div>
+      <div class="model-used" id="modelUsed">Model: Standard</div>
       <div class="confidence-section">
         <div class="confidence-bar">
           <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
@@ -1312,7 +1329,7 @@
 
     // Initialize
     document.addEventListener('DOMContentLoaded', () => {
-      loadCompanies();
+      loadModels();
     });
 
     // Toggle example images section
@@ -1462,25 +1479,42 @@
       }
     });
 
-    // Load companies
-    async function loadCompanies() {
+    // Load available models
+    async function loadModels() {
       try {
-        const response = await fetch('/companies');
+        const response = await fetch('/models');
         const data = await response.json();
-        const select = document.getElementById('companySelect');
+        const select = document.getElementById('modelSelect');
         
-        if (data.companies && data.companies.length > 0) {
-          data.companies.forEach(company => {
-            const option = document.createElement('option');
-            option.value = company;
-            option.textContent = company;
-            select.appendChild(option);
+        // Clear existing options
+        select.innerHTML = '';
+        
+        if (data.models && data.models.length > 0) {
+          data.models.forEach(model => {
+            if (model.available) {
+              const option = document.createElement('option');
+              option.value = model.id;
+              option.textContent = `${model.name} - ${model.description}`;
+              if (model.id === data.default) {
+                option.selected = true;
+              }
+              select.appendChild(option);
+            }
           });
         }
+        
+        // If no models available, show fallback
+        if (select.options.length === 0) {
+          const option = document.createElement('option');
+          option.value = 'standard';
+          option.textContent = 'Standard Model';
+          select.appendChild(option);
+        }
       } catch (error) {
-        console.log('Could not load companies');
+        console.log('Could not load models, using default');
       }
     }
+
 
     // Open camera
     async function openCamera(side) {
@@ -1614,10 +1648,11 @@
         const formData = new FormData();
         formData.append('obverse', obverseFile);
         formData.append('reverse', reverseFile);
+        formData.append('company', 'PCGS');
         
-        const company = document.getElementById('companySelect').value;
-        if (company) {
-          formData.append('company', company);
+        const model = document.getElementById('modelSelect').value;
+        if (model) {
+          formData.append('model', model);
         }
         
         const response = await fetch('/predict', {
@@ -1636,6 +1671,11 @@
         document.getElementById('gradeSheldon').textContent = `Sheldon Scale: ${result.sheldon_grade}`;
         document.getElementById('confidenceFill').style.width = `${result.confidence}%`;
         document.getElementById('confidenceText').textContent = `${result.confidence}%`;
+        
+        // Show which model was used
+        const modelUsed = result.model_used || 'Standard';
+        document.getElementById('modelUsed').textContent = `Model: ${modelUsed}`;
+        
         document.getElementById('resultsCard').classList.add('visible');
         document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth' });
         
