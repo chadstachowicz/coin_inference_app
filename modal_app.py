@@ -26,6 +26,7 @@ Test JSON API (with API key):
 Available models:
     - standard: ResNet-50 backbone (fast)
     - advanced: ConvNeXt backbone (accurate)
+    - morgans: Morgan Specific
 """
 
 import modal
@@ -1041,7 +1042,7 @@ class APIPredictRequest(BaseModel):
     """Request model for JSON API prediction endpoint."""
     obverse_base64: str = Field(..., description="Base64-encoded obverse (front) image")
     reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
-    model: Optional[str] = Field("standard", description="Model type: 'standard' (ResNet-50) or 'advanced' (ConvNeXt)")
+    model: Optional[str] = Field("standard", description="Model type: 'standard' (ResNet-50) or 'advanced' (ConvNeXt) or 'morgans' (Morgan Specific)")
     company: Optional[str] = Field(None, description="Grading company (PCGS, NGC, CACG)")
     save_images: Optional[bool] = Field(False, description="Save images for review")
     
@@ -1151,7 +1152,7 @@ async def predict(
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
     company: Optional[str] = Form(None),
-    model: Optional[str] = Form(None, description="Model type: 'standard' or 'advanced'"),
+    model: Optional[str] = Form(None, description="Model type: 'standard' or 'advanced' or 'morgans'"),
     async_mode: bool = Form(False, description="Return job_id for polling instead of waiting"),
     save_images: bool = Form(True, description="Save images for review (default True)")
 ):
@@ -1160,6 +1161,7 @@ async def predict(
     Model options:
     - 'standard': ResNet-50 backbone (fast and reliable)
     - 'advanced': ConvNeXt backbone (higher accuracy)
+    - 'morgans': Morgan Specific
     
     If async_mode=True, returns immediately with a job_id that can be polled at /predict/{job_id}.
     If async_mode=False (default), waits for the result (uses async I/O, doesn't block other requests).
@@ -1265,6 +1267,7 @@ Include your API key in the `X-API-Key` header.
 ## Models
 - `standard`: ResNet-50 backbone - Fast and reliable
 - `advanced`: ConvNeXt backbone - Higher accuracy
+- `morgans`: Morgan Specific
 
 ## Example Request
 ```bash
@@ -1296,7 +1299,7 @@ response = requests.post(
     json={
         "obverse_base64": obverse_b64,
         "reverse_base64": reverse_b64,
-        "model": "advanced",  # or "standard"
+        "model": "advanced",  # or "standard" or "morgans"
         "company": "PCGS"
     }
 )
