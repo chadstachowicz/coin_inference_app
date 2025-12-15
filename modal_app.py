@@ -457,6 +457,12 @@ MODEL_REGISTRY = {
         "name": "Advanced",
         "description": "ConvNeXt backbone - Higher accuracy",
         "backbone": "convnext_small"
+    },
+    "morgans": {
+        "file": "coin_morgans_best.pth",
+        "name": "Morgan Dollas",
+        "description": "Morgan Specific",
+        "backbone": "convnext_small"
     }
 }
 
