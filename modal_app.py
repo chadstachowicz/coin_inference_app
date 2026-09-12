@@ -634,6 +634,190 @@ def get_model_class(backbone: str = "resnet50"):
         return get_resnet_model_class()
 
 
+def get_mintmark_model_class():
+    """Define the MintMark classification model class."""
+    import torch
+    import torch.nn as nn
+    from torchvision.models import convnext_small, ConvNeXt_Small_Weights
+    
+    class MintMarkConvNeXt(nn.Module):
+        """ConvNeXt-Small for mint mark classification with year/denom conditioning."""
+        
+        def __init__(self, num_classes, use_year=True, year_embedding_dim=32, num_years=233,
+                     use_denom=True, denom_embedding_dim=16, num_denoms=20):
+            super(MintMarkConvNeXt, self).__init__()
+            
+            self.num_classes = num_classes
+            self.use_year = use_year
+            self.use_denom = use_denom
+            
+            if use_year:
+                self.year_embedding = nn.Embedding(num_years, year_embedding_dim)
+                self.year_embedding_dim = year_embedding_dim
+            
+            if use_denom:
+                self.denom_embedding = nn.Embedding(num_denoms, denom_embedding_dim)
+                self.denom_embedding_dim = denom_embedding_dim
+            
+            weights = ConvNeXt_Small_Weights.IMAGENET1K_V1
+            obverse_convnext = convnext_small(weights=weights)
+            reverse_convnext = convnext_small(weights=weights)
+            
+            self.obverse_features = obverse_convnext.features
+            self.obverse_avgpool = obverse_convnext.avgpool
+            self.reverse_features = reverse_convnext.features
+            self.reverse_avgpool = reverse_convnext.avgpool
+            
+            self.feature_dim = 768
+            
+            fusion_input_dim = self.feature_dim * 2
+            if use_year:
+                fusion_input_dim += year_embedding_dim
+            if use_denom:
+                fusion_input_dim += denom_embedding_dim
+            
+            self.fusion = nn.Sequential(
+                nn.Linear(fusion_input_dim, 512),
+                nn.LayerNorm(512),
+                nn.GELU(),
+                nn.Dropout(0.3),
+            )
+            
+            self.classifier = nn.Sequential(
+                nn.Linear(512, 256),
+                nn.LayerNorm(256),
+                nn.GELU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, num_classes)
+            )
+        
+        def forward(self, obverse, reverse, year_idx=None, denom_idx=None):
+            obverse_feat = self.obverse_avgpool(self.obverse_features(obverse))
+            obverse_feat = obverse_feat.view(obverse.size(0), -1)
+            
+            reverse_feat = self.reverse_avgpool(self.reverse_features(reverse))
+            reverse_feat = reverse_feat.view(reverse.size(0), -1)
+            
+            combined = torch.cat([obverse_feat, reverse_feat], dim=1)
+            
+            if self.use_year and year_idx is not None:
+                year_emb = self.year_embedding(year_idx)
+                combined = torch.cat([combined, year_emb], dim=1)
+            
+            if self.use_denom and denom_idx is not None:
+                denom_emb = self.denom_embedding(denom_idx)
+                combined = torch.cat([combined, denom_emb], dim=1)
+            
+            fused = self.fusion(combined)
+            logits = self.classifier(fused)
+            
+            return logits
+    
+    return MintMarkConvNeXt
+
+
+def get_strike_type_model_class():
+    """Define the Strike Type classification model class."""
+    import torch
+    import torch.nn as nn
+    from torchvision.models import convnext_small, ConvNeXt_Small_Weights
+    
+    class StrikeTypeConvNeXt(nn.Module):
+        """ConvNeXt-Small for strike type classification (Proof vs Circulation)."""
+        
+        def __init__(self, num_classes=2, use_year=False, year_embedding_dim=32, num_years=233,
+                     use_denom=False, denom_embedding_dim=16, num_denoms=20):
+            super(StrikeTypeConvNeXt, self).__init__()
+            
+            self.num_classes = num_classes
+            self.use_year = use_year
+            self.use_denom = use_denom
+            
+            if use_year:
+                self.year_embedding = nn.Embedding(num_years, year_embedding_dim)
+                self.year_embedding_dim = year_embedding_dim
+            
+            if use_denom:
+                self.denom_embedding = nn.Embedding(num_denoms, denom_embedding_dim)
+                self.denom_embedding_dim = denom_embedding_dim
+            
+            weights = ConvNeXt_Small_Weights.IMAGENET1K_V1
+            obverse_convnext = convnext_small(weights=weights)
+            reverse_convnext = convnext_small(weights=weights)
+            
+            self.obverse_features = obverse_convnext.features
+            self.obverse_avgpool = obverse_convnext.avgpool
+            self.reverse_features = reverse_convnext.features
+            self.reverse_avgpool = reverse_convnext.avgpool
+            
+            self.feature_dim = 768
+            
+            fusion_input_dim = self.feature_dim * 2
+            if use_year:
+                fusion_input_dim += year_embedding_dim
+            if use_denom:
+                fusion_input_dim += denom_embedding_dim
+            
+            self.fusion = nn.Sequential(
+                nn.Linear(fusion_input_dim, 512),
+                nn.LayerNorm(512),
+                nn.GELU(),
+                nn.Dropout(0.3),
+            )
+            
+            self.classifier = nn.Sequential(
+                nn.Linear(512, 256),
+                nn.LayerNorm(256),
+                nn.GELU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, num_classes)
+            )
+        
+        def forward(self, obverse, reverse, year_idx=None, denom_idx=None):
+            obverse_feat = self.obverse_avgpool(self.obverse_features(obverse))
+            obverse_feat = obverse_feat.view(obverse.size(0), -1)
+            
+            reverse_feat = self.reverse_avgpool(self.reverse_features(reverse))
+            reverse_feat = reverse_feat.view(reverse.size(0), -1)
+            
+            combined = torch.cat([obverse_feat, reverse_feat], dim=1)
+            
+            if self.use_year and year_idx is not None:
+                year_emb = self.year_embedding(year_idx)
+                combined = torch.cat([combined, year_emb], dim=1)
+            
+            if self.use_denom and denom_idx is not None:
+                denom_emb = self.denom_embedding(denom_idx)
+                combined = torch.cat([combined, denom_emb], dim=1)
+            
+            fused = self.fusion(combined)
+            logits = self.classifier(fused)
+            
+            return logits
+    
+    return StrikeTypeConvNeXt
+
+
+# Strike type info for display
+STRIKE_TYPE_INFO = {
+    'Circulation': 'Business strike for commerce',
+    'Proof': 'Collector proof strike with mirror finish'
+}
+
+# Mint mark info for display
+MINT_MARK_INFO = {
+    'None': 'Philadelphia (no mark)',
+    'P': 'Philadelphia (explicit)',
+    'D': 'Denver (1906+)',
+    'DL': 'Dahlonega (1838-1861, gold only)',
+    'S': 'San Francisco',
+    'O': 'New Orleans',
+    'CC': 'Carson City',
+    'C': 'Charlotte (1838-1861, gold only)',
+    'W': 'West Point'
+}
+
+
 # ============================================================================
 # COIN GRADER CLASS
 # ============================================================================
@@ -643,6 +827,7 @@ def get_model_class(backbone: str = "resnet50"):
     volumes={MODEL_DIR: model_volume},
     secrets=[admin_secret],  # For MODEL_NAME config
     gpu="A10G",  # A10G GPU for faster inference
+    memory=8192,  # 8GB RAM for handling concurrent requests
     timeout=600,  # 10 minute timeout for cold starts
     scaledown_window=600,  # Keep container warm for 10 minutes
 )
@@ -971,6 +1156,462 @@ class CoinGrader:
 
 
 # ============================================================================
+# MINT MARK PREDICTOR CLASS
+# ============================================================================
+
+@app.cls(
+    image=image,
+    volumes={MODEL_DIR: model_volume},
+    gpu="A10G",
+    memory=8192,
+    timeout=600,
+    scaledown_window=600,
+)
+@modal.concurrent(max_inputs=20)
+class MintMarkPredictor:
+    """Modal class for mint mark classification."""
+    
+    model = None
+    config = None
+    transform = None
+    device = None
+    
+    @modal.enter()
+    def initialize(self):
+        """Initialize the mint mark predictor when container starts."""
+        import torch
+        from torchvision import transforms
+        
+        print("🔄 Initializing mint mark predictor...")
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Image transform - 384x384 for mint mark model
+        self.transform = transforms.Compose([
+            transforms.Resize((384, 384)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Load the mint mark model
+        model_path = Path(MODEL_DIR) / "coin_mintmark_best.pth"
+        
+        if not model_path.exists():
+            print(f"❌ Mint mark model not found at {model_path}")
+            print("Upload with: modal volume put coin-grader-models models/coin_mintmark_year_best.pth coin_mintmark_best.pth")
+            return
+        
+        checkpoint = torch.load(model_path, map_location=self.device)
+        
+        # Extract config from checkpoint
+        self.config = {
+            'class_to_idx': checkpoint.get('class_to_idx', {}),
+            'idx_to_class': checkpoint.get('idx_to_class', {}),
+            'num_classes': checkpoint.get('num_classes', 9),
+            'use_year': checkpoint.get('use_year_conditioning', True),
+            'year_embedding_dim': checkpoint.get('year_embedding_dim', 32),
+            'year_min': checkpoint.get('year_min', 1793),
+            'year_max': checkpoint.get('year_max', 2025),
+            'use_denom': checkpoint.get('use_denom_conditioning', True),
+            'denom_embedding_dim': checkpoint.get('denom_embedding_dim', 16),
+            'denom_to_idx': checkpoint.get('denom_to_idx', {}),
+            'idx_to_denom': checkpoint.get('idx_to_denom', {}),
+            'num_denoms': checkpoint.get('num_denoms', 20),
+        }
+        
+        # Build model
+        MintMarkClass = get_mintmark_model_class()
+        num_years = self.config['year_max'] - self.config['year_min'] + 1
+        
+        self.model = MintMarkClass(
+            num_classes=self.config['num_classes'],
+            use_year=self.config['use_year'],
+            year_embedding_dim=self.config['year_embedding_dim'],
+            num_years=num_years,
+            use_denom=self.config['use_denom'],
+            denom_embedding_dim=self.config['denom_embedding_dim'],
+            num_denoms=self.config['num_denoms']
+        )
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        
+        print(f"✅ Mint mark predictor initialized on {self.device}")
+        print(f"   Classes: {list(self.config['class_to_idx'].keys())}")
+        print(f"   Year conditioning: {self.config['use_year']}")
+        print(f"   Denom conditioning: {self.config['use_denom']}")
+    
+    def preprocess_coin_image(self, pil_image, output_size=384):
+        """Hough circle detection, circular mask, and centering on white background."""
+        import numpy as np
+        import cv2
+        from PIL import Image
+        
+        img_rgb = np.array(pil_image)
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        
+        height, width = img_bgr.shape[:2]
+        min_dim = min(height, width)
+        
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+        
+        circles = cv2.HoughCircles(
+            blurred, cv2.HOUGH_GRADIENT, dp=1, minDist=min_dim // 2,
+            param1=50, param2=30,
+            minRadius=int(min_dim * 0.2), maxRadius=int(min_dim * 0.5)
+        )
+        
+        if circles is None:
+            circles = cv2.HoughCircles(
+                blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dim // 3,
+                param1=100, param2=20,
+                minRadius=int(min_dim * 0.15), maxRadius=int(min_dim * 0.55)
+            )
+        
+        if circles is None:
+            cx, cy = width // 2, height // 2
+            radius = min_dim // 2 - 10
+        else:
+            circles = np.uint16(np.around(circles))
+            cx, cy, radius = circles[0][0]
+        
+        mask_radius = int(radius * 1.02)
+        mask_original = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+        cv2.circle(mask_original, (int(cx), int(cy)), mask_radius, 255, -1)
+        mask_original = cv2.GaussianBlur(mask_original, (7, 7), 0)
+        
+        white_original = np.ones_like(img_bgr) * 255
+        mask_3ch = cv2.cvtColor(mask_original, cv2.COLOR_GRAY2BGR).astype(float) / 255.0
+        blended = (img_bgr.astype(float) * mask_3ch + white_original.astype(float) * (1 - mask_3ch)).astype(np.uint8)
+        
+        padding = int(radius * 0.05)
+        crop_radius = radius + padding
+        x1 = max(0, int(cx - crop_radius))
+        y1 = max(0, int(cy - crop_radius))
+        x2 = min(width, int(cx + crop_radius))
+        y2 = min(height, int(cy + crop_radius))
+        
+        cropped = blended[y1:y2, x1:x2]
+        white_bg = np.ones((output_size, output_size, 3), dtype=np.uint8) * 255
+        
+        crop_h, crop_w = cropped.shape[:2]
+        scale = (output_size * 0.92) / max(crop_h, crop_w)
+        new_w = int(crop_w * scale)
+        new_h = int(crop_h * scale)
+        
+        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        x_offset = (output_size - new_w) // 2
+        y_offset = (output_size - new_h) // 2
+        white_bg[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        result_rgb = cv2.cvtColor(white_bg, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(result_rgb)
+    
+    @modal.method()
+    def predict(self, obverse_bytes: bytes, reverse_bytes: bytes, 
+                year: int = None, denomination: str = None) -> dict:
+        """Predict mint mark from image bytes."""
+        import torch
+        import torch.nn.functional as F
+        from PIL import Image
+        
+        if self.model is None:
+            return {"error": "Model not loaded. Upload coin_mintmark_best.pth first."}
+        
+        # Load and preprocess images
+        obverse_img = Image.open(io.BytesIO(obverse_bytes)).convert("RGB")
+        reverse_img = Image.open(io.BytesIO(reverse_bytes)).convert("RGB")
+        
+        obverse_processed = self.preprocess_coin_image(obverse_img, output_size=384)
+        reverse_processed = self.preprocess_coin_image(reverse_img, output_size=384)
+        
+        obverse_tensor = self.transform(obverse_processed).unsqueeze(0).to(self.device)
+        reverse_tensor = self.transform(reverse_processed).unsqueeze(0).to(self.device)
+        
+        # Handle year conditioning
+        year_idx_tensor = None
+        if self.config['use_year'] and year is not None:
+            year_clamped = max(self.config['year_min'], min(self.config['year_max'], year))
+            year_idx = year_clamped - self.config['year_min']
+            year_idx_tensor = torch.tensor([year_idx], dtype=torch.long).to(self.device)
+        
+        # Handle denomination conditioning
+        denom_idx_tensor = None
+        if self.config['use_denom'] and denomination is not None:
+            denom_to_idx = self.config['denom_to_idx']
+            if denomination in denom_to_idx:
+                denom_idx_tensor = torch.tensor([denom_to_idx[denomination]], dtype=torch.long).to(self.device)
+        
+        # Predict
+        with torch.no_grad():
+            logits = self.model(obverse_tensor, reverse_tensor, year_idx_tensor, denom_idx_tensor)
+            probs = F.softmax(logits, dim=1)
+            confidence, predicted_idx = torch.max(probs, dim=1)
+            
+            predicted_idx = predicted_idx.item()
+            confidence = confidence.item() * 100
+        
+        # Get mint mark name
+        idx_to_class = self.config['idx_to_class']
+        # Handle both int and string keys
+        if predicted_idx in idx_to_class:
+            mint_mark = idx_to_class[predicted_idx]
+        elif str(predicted_idx) in idx_to_class:
+            mint_mark = idx_to_class[str(predicted_idx)]
+        else:
+            mint_mark = "Unknown"
+        
+        # Get all class probabilities
+        class_probs = {}
+        for idx, prob in enumerate(probs[0].cpu().numpy()):
+            if idx in idx_to_class:
+                class_name = idx_to_class[idx]
+            elif str(idx) in idx_to_class:
+                class_name = idx_to_class[str(idx)]
+            else:
+                class_name = f"Class_{idx}"
+            class_probs[class_name] = round(float(prob) * 100, 2)
+        
+        return {
+            "mint_mark": mint_mark,
+            "mint_mark_info": MINT_MARK_INFO.get(mint_mark, mint_mark),
+            "confidence": round(confidence, 1),
+            "all_probabilities": class_probs,
+            "year_used": year,
+            "denomination_used": denomination
+        }
+    
+    @modal.method()
+    def get_mint_marks(self) -> list:
+        """Return list of possible mint marks."""
+        if self.config is None:
+            return []
+        return [
+            {"mint_mark": mm, "info": MINT_MARK_INFO.get(mm, mm)}
+            for mm in self.config.get('class_to_idx', {}).keys()
+        ]
+
+
+# ============================================================================
+# STRIKE TYPE PREDICTOR CLASS
+# ============================================================================
+
+@app.cls(
+    image=image,
+    volumes={MODEL_DIR: model_volume},
+    gpu="A10G",
+    memory=8192,
+    timeout=600,
+    scaledown_window=600,
+)
+@modal.concurrent(max_inputs=20)
+class StrikeTypePredictor:
+    """Modal class for strike type classification (Proof vs Circulation)."""
+    
+    model = None
+    config = None
+    transform = None
+    device = None
+    
+    @modal.enter()
+    def initialize(self):
+        """Initialize the strike type predictor when container starts."""
+        import torch
+        from torchvision import transforms
+        
+        print("🔄 Initializing strike type predictor...")
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # Image transform - 256x256 for strike type model
+        self.transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Load the strike type model
+        model_path = Path(MODEL_DIR) / "coin_strike_best.pth"
+        
+        if not model_path.exists():
+            print(f"❌ Strike type model not found at {model_path}")
+            print("Upload with: modal volume put coin-grader-models models/coin_strike_best.pth coin_strike_best.pth")
+            return
+        
+        checkpoint = torch.load(model_path, map_location=self.device)
+        
+        # Extract config from checkpoint
+        self.config = {
+            'class_to_idx': checkpoint.get('class_to_idx', {'Circulation': 0, 'Proof': 1}),
+            'idx_to_class': checkpoint.get('idx_to_class', {0: 'Circulation', 1: 'Proof'}),
+            'num_classes': checkpoint.get('num_classes', 2),
+            'use_year': checkpoint.get('use_year_conditioning', False),
+            'year_embedding_dim': checkpoint.get('year_embedding_dim', 32),
+            'year_min': checkpoint.get('year_min', 1793),
+            'year_max': checkpoint.get('year_max', 2025),
+            'use_denom': checkpoint.get('use_denom_conditioning', False),
+            'denom_embedding_dim': checkpoint.get('denom_embedding_dim', 16),
+            'denom_to_idx': checkpoint.get('denom_to_idx', {}),
+            'num_denoms': checkpoint.get('num_denoms', 20),
+        }
+        
+        # Build model
+        StrikeTypeClass = get_strike_type_model_class()
+        num_years = self.config['year_max'] - self.config['year_min'] + 1
+        
+        self.model = StrikeTypeClass(
+            num_classes=self.config['num_classes'],
+            use_year=self.config['use_year'],
+            year_embedding_dim=self.config['year_embedding_dim'],
+            num_years=num_years,
+            use_denom=self.config['use_denom'],
+            denom_embedding_dim=self.config['denom_embedding_dim'],
+            num_denoms=self.config['num_denoms']
+        )
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+        
+        print(f"✅ Strike type predictor initialized on {self.device}")
+        print(f"   Classes: {list(self.config['class_to_idx'].keys())}")
+    
+    def preprocess_coin_image(self, pil_image, output_size=256):
+        """Hough circle detection, circular mask, and centering on white background."""
+        import numpy as np
+        import cv2
+        from PIL import Image
+        
+        img_rgb = np.array(pil_image)
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        
+        height, width = img_bgr.shape[:2]
+        min_dim = min(height, width)
+        
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+        
+        circles = cv2.HoughCircles(
+            blurred, cv2.HOUGH_GRADIENT, dp=1, minDist=min_dim // 2,
+            param1=50, param2=30,
+            minRadius=int(min_dim * 0.2), maxRadius=int(min_dim * 0.5)
+        )
+        
+        if circles is None:
+            circles = cv2.HoughCircles(
+                blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dim // 3,
+                param1=100, param2=20,
+                minRadius=int(min_dim * 0.15), maxRadius=int(min_dim * 0.55)
+            )
+        
+        if circles is None:
+            cx, cy = width // 2, height // 2
+            radius = min_dim // 2 - 10
+        else:
+            circles = np.uint16(np.around(circles))
+            cx, cy, radius = circles[0][0]
+        
+        mask_radius = int(radius * 1.02)
+        mask_original = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
+        cv2.circle(mask_original, (int(cx), int(cy)), mask_radius, 255, -1)
+        mask_original = cv2.GaussianBlur(mask_original, (7, 7), 0)
+        
+        white_original = np.ones_like(img_bgr) * 255
+        mask_3ch = cv2.cvtColor(mask_original, cv2.COLOR_GRAY2BGR).astype(float) / 255.0
+        blended = (img_bgr.astype(float) * mask_3ch + white_original.astype(float) * (1 - mask_3ch)).astype(np.uint8)
+        
+        padding = int(radius * 0.05)
+        crop_radius = radius + padding
+        x1 = max(0, int(cx - crop_radius))
+        y1 = max(0, int(cy - crop_radius))
+        x2 = min(width, int(cx + crop_radius))
+        y2 = min(height, int(cy + crop_radius))
+        
+        cropped = blended[y1:y2, x1:x2]
+        white_bg = np.ones((output_size, output_size, 3), dtype=np.uint8) * 255
+        
+        crop_h, crop_w = cropped.shape[:2]
+        scale = (output_size * 0.92) / max(crop_h, crop_w)
+        new_w = int(crop_w * scale)
+        new_h = int(crop_h * scale)
+        
+        resized = cv2.resize(cropped, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        x_offset = (output_size - new_w) // 2
+        y_offset = (output_size - new_h) // 2
+        white_bg[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        
+        result_rgb = cv2.cvtColor(white_bg, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(result_rgb)
+    
+    @modal.method()
+    def predict(self, obverse_bytes: bytes, reverse_bytes: bytes) -> dict:
+        """Predict strike type (Proof vs Circulation) from image bytes."""
+        import torch
+        import torch.nn.functional as F
+        from PIL import Image
+        
+        if self.model is None:
+            return {"error": "Model not loaded. Upload coin_strike_best.pth first."}
+        
+        # Load and preprocess images
+        obverse_img = Image.open(io.BytesIO(obverse_bytes)).convert("RGB")
+        reverse_img = Image.open(io.BytesIO(reverse_bytes)).convert("RGB")
+        
+        obverse_processed = self.preprocess_coin_image(obverse_img, output_size=256)
+        reverse_processed = self.preprocess_coin_image(reverse_img, output_size=256)
+        
+        obverse_tensor = self.transform(obverse_processed).unsqueeze(0).to(self.device)
+        reverse_tensor = self.transform(reverse_processed).unsqueeze(0).to(self.device)
+        
+        # Predict (no year/denom conditioning for strike type)
+        with torch.no_grad():
+            logits = self.model(obverse_tensor, reverse_tensor, None, None)
+            probs = F.softmax(logits, dim=1)
+            confidence, predicted_idx = torch.max(probs, dim=1)
+            
+            predicted_idx = predicted_idx.item()
+            confidence = confidence.item() * 100
+        
+        # Get strike type name
+        idx_to_class = self.config['idx_to_class']
+        if predicted_idx in idx_to_class:
+            strike_type = idx_to_class[predicted_idx]
+        elif str(predicted_idx) in idx_to_class:
+            strike_type = idx_to_class[str(predicted_idx)]
+        else:
+            strike_type = "Unknown"
+        
+        # Get both class probabilities
+        class_probs = {}
+        for idx, prob in enumerate(probs[0].cpu().numpy()):
+            if idx in idx_to_class:
+                class_name = idx_to_class[idx]
+            elif str(idx) in idx_to_class:
+                class_name = idx_to_class[str(idx)]
+            else:
+                class_name = f"Class_{idx}"
+            class_probs[class_name] = round(float(prob) * 100, 2)
+        
+        return {
+            "strike_type": strike_type,
+            "strike_type_info": STRIKE_TYPE_INFO.get(strike_type, strike_type),
+            "confidence": round(confidence, 1),
+            "is_proof": strike_type == "Proof",
+            "probabilities": class_probs
+        }
+    
+    @modal.method()
+    def get_strike_types(self) -> list:
+        """Return list of possible strike types."""
+        return [
+            {"strike_type": st, "info": info}
+            for st, info in STRIKE_TYPE_INFO.items()
+        ]
+
+
+# ============================================================================
 # WEB ENDPOINTS (FastAPI)
 # ============================================================================
 
@@ -1044,7 +1685,7 @@ class APIPredictRequest(BaseModel):
     reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
     model: Optional[str] = Field("standard", description="Model type: 'standard' (ResNet-50) or 'advanced' (ConvNeXt) or 'morgans' (Morgan Specific)")
     company: Optional[str] = Field(None, description="Grading company (PCGS, NGC, CACG)")
-    save_images: Optional[bool] = Field(False, description="Save images for review")
+    save_images: Optional[bool] = Field(True, description="Save images for review")
     
     class Config:
         json_schema_extra = {
@@ -1791,6 +2432,298 @@ async def split_combined(
         result["split_id"] = split_id
 
     return result
+
+
+# ============================================================================
+# MINT MARK PREDICTION ENDPOINTS
+# ============================================================================
+
+class APIMintMarkRequest(BaseModel):
+    """Request model for mint mark prediction."""
+    obverse_base64: str = Field(..., description="Base64-encoded obverse (front) image")
+    reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
+    year: Optional[int] = Field(None, description="Coin year (helps with era-specific mint marks)")
+    denomination: Optional[str] = Field(None, description="Coin denomination (e.g., 'cent', 'quarter')")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "obverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+                "reverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+                "year": 1921,
+                "denomination": "dollar"
+            }
+        }
+
+
+class APIMintMarkResponse(BaseModel):
+    """Response model for mint mark prediction."""
+    mint_mark: str = Field(..., description="Predicted mint mark (e.g., 'D', 'S', 'None')")
+    mint_mark_info: str = Field(..., description="Description of the mint mark")
+    confidence: float = Field(..., description="Confidence percentage (0-100)")
+    all_probabilities: dict = Field(..., description="Probabilities for all mint marks")
+    year_used: Optional[int] = Field(None, description="Year used for conditioning")
+    denomination_used: Optional[str] = Field(None, description="Denomination used for conditioning")
+
+
+@web_app.post("/predict-mintmark")
+async def predict_mintmark(
+    request: Request,
+    obverse: UploadFile = File(...),
+    reverse: UploadFile = File(...),
+    year: Optional[int] = Form(None, description="Coin year"),
+    denomination: Optional[str] = Form(None, description="Coin denomination")
+):
+    """
+    Predict mint mark from uploaded coin images.
+    
+    Mint marks identify where a coin was minted:
+    - None: Philadelphia (no mark)
+    - P: Philadelphia (explicit)
+    - D: Denver
+    - S: San Francisco
+    - O: New Orleans
+    - CC: Carson City
+    - C: Charlotte (gold only)
+    - DL: Dahlonega (gold only)
+    - W: West Point
+    
+    Optionally provide year and denomination to improve accuracy.
+    """
+    predictor = MintMarkPredictor()
+    
+    obverse_bytes = await obverse.read()
+    reverse_bytes = await reverse.read()
+    
+    result = await predictor.predict.remote.aio(
+        obverse_bytes, reverse_bytes, year, denomination
+    )
+    
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    return result
+
+
+@web_app.post(
+    "/api/predict-mintmark",
+    response_model=APIMintMarkResponse,
+    responses={
+        401: {"model": APIErrorResponse, "description": "Invalid or missing API key"},
+        400: {"model": APIErrorResponse, "description": "Invalid request"},
+        500: {"model": APIErrorResponse, "description": "Server error"},
+    },
+    tags=["API"],
+    summary="Predict mint mark (JSON API)",
+    description="""
+Predict coin mint mark from base64-encoded images.
+
+## Authentication
+Include your API key in the `X-API-Key` header.
+
+## Mint Marks
+- `None`: Philadelphia (no mark on coin)
+- `P`: Philadelphia (explicit P mark)
+- `D`: Denver (1906+)
+- `S`: San Francisco
+- `O`: New Orleans
+- `CC`: Carson City
+- `C`: Charlotte (1838-1861, gold only)
+- `DL`: Dahlonega (1838-1861, gold only)
+- `W`: West Point
+
+## Optional Conditioning
+Provide `year` and `denomination` to improve accuracy:
+- Year helps eliminate impossible mint marks (e.g., CC only 1870-1893)
+- Denomination helps (e.g., C and DL only minted gold coins)
+"""
+)
+async def api_predict_mintmark(
+    request: Request,
+    body: APIMintMarkRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """JSON API for mint mark prediction with API key authentication."""
+    try:
+        # Decode base64 images
+        try:
+            obverse_bytes = base64.b64decode(body.obverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for obverse image: {str(e)}"
+            )
+        
+        try:
+            reverse_bytes = base64.b64decode(body.reverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for reverse image: {str(e)}"
+            )
+        
+        predictor = MintMarkPredictor()
+        result = await predictor.predict.remote.aio(
+            obverse_bytes, reverse_bytes, body.year, body.denomination
+        )
+        
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        
+        return APIMintMarkResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing mint mark prediction: {str(e)}"
+        )
+
+
+@web_app.get("/mint-marks")
+async def get_mint_marks():
+    """Get list of possible mint marks."""
+    return {
+        "mint_marks": [
+            {"mint_mark": mm, "info": info}
+            for mm, info in MINT_MARK_INFO.items()
+        ]
+    }
+
+
+# ============================================================================
+# STRIKE TYPE PREDICTION ENDPOINTS
+# ============================================================================
+
+class APIStrikeTypeRequest(BaseModel):
+    """Request model for strike type prediction."""
+    obverse_base64: str = Field(..., description="Base64-encoded obverse (front) image")
+    reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "obverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD...",
+                "reverse_base64": "/9j/4AAQSkZJRgABAQEASABIAAD..."
+            }
+        }
+
+
+class APIStrikeTypeResponse(BaseModel):
+    """Response model for strike type prediction."""
+    strike_type: str = Field(..., description="Predicted strike type (Proof or Circulation)")
+    strike_type_info: str = Field(..., description="Description of the strike type")
+    confidence: float = Field(..., description="Confidence percentage (0-100)")
+    is_proof: bool = Field(..., description="True if coin is a proof strike")
+    probabilities: dict = Field(..., description="Probabilities for both strike types")
+
+
+@web_app.post("/predict-strike")
+async def predict_strike(
+    request: Request,
+    obverse: UploadFile = File(...),
+    reverse: UploadFile = File(...)
+):
+    """
+    Predict strike type (Proof vs Circulation) from uploaded coin images.
+    
+    Strike types:
+    - Circulation: Business strike coins intended for commerce
+    - Proof: Special high-quality coins struck for collectors with mirror-like fields
+    
+    Visual differences:
+    - Proof coins have mirror-like fields, frosted devices, sharp details
+    - Circulation strikes have standard finishes, may show wear
+    """
+    predictor = StrikeTypePredictor()
+    
+    obverse_bytes = await obverse.read()
+    reverse_bytes = await reverse.read()
+    
+    result = await predictor.predict.remote.aio(obverse_bytes, reverse_bytes)
+    
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+    
+    return result
+
+
+@web_app.post(
+    "/api/predict-strike",
+    response_model=APIStrikeTypeResponse,
+    responses={
+        401: {"model": APIErrorResponse, "description": "Invalid or missing API key"},
+        400: {"model": APIErrorResponse, "description": "Invalid request"},
+        500: {"model": APIErrorResponse, "description": "Server error"},
+    },
+    tags=["API"],
+    summary="Predict strike type (JSON API)",
+    description="""
+Predict coin strike type (Proof vs Circulation) from base64-encoded images.
+
+## Authentication
+Include your API key in the `X-API-Key` header.
+
+## Strike Types
+- `Circulation`: Business strike for commerce (standard finish)
+- `Proof`: Collector proof strike (mirror-like fields, frosted devices)
+
+## Visual Differences
+- **Proof coins**: Mirror-like reflective fields, frosted devices, extremely sharp details
+- **Circulation strikes**: Standard matte finish, potential wear marks
+"""
+)
+async def api_predict_strike(
+    request: Request,
+    body: APIStrikeTypeRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """JSON API for strike type prediction with API key authentication."""
+    try:
+        # Decode base64 images
+        try:
+            obverse_bytes = base64.b64decode(body.obverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for obverse image: {str(e)}"
+            )
+        
+        try:
+            reverse_bytes = base64.b64decode(body.reverse_base64)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid base64 encoding for reverse image: {str(e)}"
+            )
+        
+        predictor = StrikeTypePredictor()
+        result = await predictor.predict.remote.aio(obverse_bytes, reverse_bytes)
+        
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        
+        return APIStrikeTypeResponse(**result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing strike type prediction: {str(e)}"
+        )
+
+
+@web_app.get("/strike-types")
+async def get_strike_types():
+    """Get list of possible strike types."""
+    return {
+        "strike_types": [
+            {"strike_type": st, "info": info}
+            for st, info in STRIKE_TYPE_INFO.items()
+        ]
+    }
 
 
 @web_app.get("/models")

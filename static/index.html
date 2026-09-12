@@ -1331,6 +1331,25 @@
     document.addEventListener('DOMContentLoaded', () => {
       loadModels();
     });
+    
+    // Handle back-forward cache (bfcache) - reload models when page is shown
+    // This fires when navigating back to this tab/page
+    window.addEventListener('pageshow', (event) => {
+      // event.persisted is true when page is restored from bfcache
+      if (event.persisted) {
+        console.log('Page restored from bfcache, reloading models...');
+        loadModels();
+      }
+    });
+    
+    // Also handle tab visibility changes (for when user switches browser tabs)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        // Optionally reload models when tab becomes visible again
+        // This ensures model list is always fresh
+        loadModels();
+      }
+    });
 
     // Toggle example images section
     function toggleExamples() {
