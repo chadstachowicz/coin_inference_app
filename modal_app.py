@@ -1195,27 +1195,34 @@ class MintMarkPredictor:
             return
         
         checkpoint = torch.load(model_path, map_location=self.device)
-        
+        state_dict = checkpoint['model_state_dict']
+
+        # Year/denomination conditioning is detected from the saved weights,
+        # since older checkpoints don't record these flags.
+        year_weight = state_dict.get('year_embedding.weight')
+        denom_weight = state_dict.get('denom_embedding.weight')
+
         # Extract config from checkpoint
         self.config = {
             'class_to_idx': checkpoint.get('class_to_idx', {}),
             'idx_to_class': checkpoint.get('idx_to_class', {}),
             'num_classes': checkpoint.get('num_classes', 9),
-            'use_year': checkpoint.get('use_year_conditioning', True),
-            'year_embedding_dim': checkpoint.get('year_embedding_dim', 32),
+            'use_year': year_weight is not None,
+            'year_embedding_dim': year_weight.shape[1] if year_weight is not None else 32,
             'year_min': checkpoint.get('year_min', 1793),
             'year_max': checkpoint.get('year_max', 2025),
-            'use_denom': checkpoint.get('use_denom_conditioning', True),
-            'denom_embedding_dim': checkpoint.get('denom_embedding_dim', 16),
+            'use_denom': denom_weight is not None,
+            'denom_embedding_dim': denom_weight.shape[1] if denom_weight is not None else 16,
             'denom_to_idx': checkpoint.get('denom_to_idx', {}),
             'idx_to_denom': checkpoint.get('idx_to_denom', {}),
-            'num_denoms': checkpoint.get('num_denoms', 20),
+            'num_denoms': denom_weight.shape[0] if denom_weight is not None else 20,
         }
         
         # Build model
         MintMarkClass = get_mintmark_model_class()
-        num_years = self.config['year_max'] - self.config['year_min'] + 1
-        
+        num_years = (year_weight.shape[0] if year_weight is not None
+                     else self.config['year_max'] - self.config['year_min'] + 1)
+
         self.model = MintMarkClass(
             num_classes=self.config['num_classes'],
             use_year=self.config['use_year'],
@@ -1225,10 +1232,10 @@ class MintMarkPredictor:
             denom_embedding_dim=self.config['denom_embedding_dim'],
             num_denoms=self.config['num_denoms']
         )
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device)
         self.model.eval()
-        
+
         print(f"✅ Mint mark predictor initialized on {self.device}")
         print(f"   Classes: {list(self.config['class_to_idx'].keys())}")
         print(f"   Year conditioning: {self.config['use_year']}")
@@ -1329,7 +1336,7 @@ class MintMarkPredictor:
             year_clamped = max(self.config['year_min'], min(self.config['year_max'], year))
             year_idx = year_clamped - self.config['year_min']
             year_idx_tensor = torch.tensor([year_idx], dtype=torch.long).to(self.device)
-        
+
         # Handle denomination conditioning
         denom_idx_tensor = None
         if self.config['use_denom'] and denomination is not None:
