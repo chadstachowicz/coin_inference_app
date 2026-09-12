@@ -29,6 +29,7 @@ Available models:
 """
 
 import modal
+import asyncio
 import io
 import time
 from pathlib import Path
@@ -1707,6 +1708,10 @@ class APIPredictResponse(BaseModel):
     raw_score: float = Field(..., description="Raw model output (0-1)")
     company_used: Optional[str] = Field(None, description="Grading company used")
     model_used: str = Field(..., description="Model name used for prediction")
+    mint_mark: Optional[str] = Field(None, description="Predicted mint mark (e.g., 'D', 'S', 'None' for Philadelphia no mark)")
+    mint_mark_info: Optional[str] = Field(None, description="Description of the mint mark")
+    mint_mark_confidence: Optional[float] = Field(None, description="Mint mark confidence percentage (0-100)")
+    mint_mark_error: Optional[str] = Field(None, description="Set if mint mark prediction failed; the grade is still returned")
     
     class Config:
         json_schema_extra = {
@@ -1716,7 +1721,11 @@ class APIPredictResponse(BaseModel):
                 "confidence": 87.5,
                 "raw_score": 0.8234,
                 "company_used": "PCGS",
-                "model_used": "Standard (All US Coins)"
+                "model_used": "Standard (All US Coins)",
+                "mint_mark": "S",
+                "mint_mark_info": "San Francisco",
+                "mint_mark_confidence": 98.2,
+                "mint_mark_error": None
             }
         }
 
@@ -1787,6 +1796,38 @@ async def home():
         )
 
 
+def mint_mark_fields(mint) -> dict:
+    """Map a MintMarkPredictor result (or the exception it raised) to response fields."""
+    if isinstance(mint, BaseException) or "error" in mint:
+        return {
+            "mint_mark": None,
+            "mint_mark_info": None,
+            "mint_mark_confidence": None,
+            "mint_mark_error": str(mint) if isinstance(mint, BaseException) else mint["error"],
+        }
+    return {
+        "mint_mark": mint["mint_mark"],
+        "mint_mark_info": mint["mint_mark_info"],
+        "mint_mark_confidence": mint["confidence"],
+        "mint_mark_error": None,
+    }
+
+
+async def grade_with_mint_mark(obverse_bytes: bytes, reverse_bytes: bytes, company: str, model_type: str) -> dict:
+    """Run the grader and mint mark predictor in parallel and merge the results.
+
+    A mint mark failure never fails the request; it's reported in mint_mark_error.
+    """
+    grade, mint = await asyncio.gather(
+        CoinGrader().predict.remote.aio(obverse_bytes, reverse_bytes, company, model_type),
+        MintMarkPredictor().predict.remote.aio(obverse_bytes, reverse_bytes),
+        return_exceptions=True,
+    )
+    if isinstance(grade, BaseException):
+        raise grade
+    return {**grade, **mint_mark_fields(mint)}
+
+
 @web_app.post("/predict")
 async def predict(
     request: Request,
@@ -1823,7 +1864,9 @@ async def predict(
     if async_mode:
         # Fire-and-forget: return job_id immediately for polling
         function_call = grader.predict.spawn(obverse_bytes, reverse_bytes, company, model_type)
-        job_id = function_call.object_id
+        mint_call = MintMarkPredictor().predict.spawn(obverse_bytes, reverse_bytes)
+        # Combined id: "<grade call id>:<mint mark call id>"
+        job_id = f"{function_call.object_id}:{mint_call.object_id}"
         
         # Log async request (result will be logged when polled)
         prediction_id = log_prediction(
@@ -1843,7 +1886,7 @@ async def predict(
         return {"job_id": job_id, "status": "processing"}
     else:
         # Async wait: doesn't block other requests thanks to .remote.aio()
-        result = await grader.predict.remote.aio(obverse_bytes, reverse_bytes, company, model_type)
+        result = await grade_with_mint_mark(obverse_bytes, reverse_bytes, company, model_type)
         
         # Log the prediction
         processing_time_ms = int((time.time() - start_time) * 1000)
@@ -1872,11 +1915,21 @@ async def get_prediction_result(job_id: str):
     from modal.functions import FunctionCall
     
     try:
-        function_call = FunctionCall.from_id(job_id)
+        # job_id is "<grade call id>:<mint mark call id>" (older ids have no mint mark part)
+        grade_call_id, _, mint_call_id = job_id.partition(":")
+        function_call = FunctionCall.from_id(grade_call_id)
         
         try:
             # Try to get result without blocking (timeout=0)
             result = function_call.get(timeout=0)
+            if mint_call_id:
+                try:
+                    mint = FunctionCall.from_id(mint_call_id).get(timeout=0)
+                except TimeoutError:
+                    return {"status": "processing", "job_id": job_id}
+                except Exception as e:
+                    mint = e
+                result = {**result, **mint_mark_fields(mint)}
             return {"status": "completed", "result": result}
         except TimeoutError:
             return {"status": "processing", "job_id": job_id}
@@ -1907,6 +1960,11 @@ Include your API key in the `X-API-Key` header.
 ## Models
 - `standard`: Standard (All US Coins)
 - `morgans`: Morgans (Morgan Dollars Only)
+
+## Mint Mark
+Every prediction also runs the mint mark model and returns `mint_mark`,
+`mint_mark_info` and `mint_mark_confidence`. If mint mark prediction fails,
+the grade is still returned with those fields null and `mint_mark_error` set.
 
 ## Example Request
 ```bash
@@ -1995,9 +2053,8 @@ async def api_predict(
         # Validate and default model type
         model_type = body.model if body.model in MODEL_REGISTRY else DEFAULT_MODEL_TYPE
         
-        # Create grader and run prediction
-        grader = CoinGrader()
-        result = await grader.predict.remote.aio(
+        # Grade and predict mint mark in parallel
+        result = await grade_with_mint_mark(
             obverse_bytes, 
             reverse_bytes, 
             body.company, 
