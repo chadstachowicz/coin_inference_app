@@ -24,11 +24,11 @@ cd /Users/chadstachowicz/coin_scrape
 # Create the volume and upload the models
 modal volume create coin-grader-models
 
-# Upload ResNet model (standard)
-modal volume put coin-grader-models models/coin_ordinal_best.pth coin_ordinal_best.pth
-
-# Upload ConvNeXt model (advanced) - optional but recommended
+# Upload Standard model (All US Coins)
 modal volume put coin-grader-models models/coin_convnext_best.pth coin_convnext_best.pth
+
+# Upload Morgans model (Morgan Dollars Only)
+modal volume put coin-grader-models models/coin_morgans_best.pth coin_morgans_best.pth
 ```
 
 ### Step 2: Set Up API Keys (for programmatic access)
@@ -64,10 +64,10 @@ modal serve modal_app.py
 
 ## Available Models
 
-| Model ID | Backbone | Description |
-|----------|----------|-------------|
-| `standard` | ResNet-50 | Fast and reliable (default) |
-| `advanced` | ConvNeXt-Small | Higher accuracy |
+| Model ID | Name | Description |
+|----------|------|-------------|
+| `standard` | Standard (All US Coins) | All US coins (default) |
+| `morgans` | Morgans (Morgan Dollars Only) | Morgan dollars only |
 
 ## API Endpoints
 
@@ -110,7 +110,7 @@ Response:
   "confidence": 85.2,
   "raw_score": 0.8462,
   "company_used": "PCGS",
-  "model_used": "Standard"
+  "model_used": "Standard (All US Coins)"
 }
 ```
 
@@ -129,7 +129,7 @@ curl -X POST "https://YOUR_URL/api/predict" \
   -d "{
     \"obverse_base64\": \"$OBVERSE_B64\",
     \"reverse_base64\": \"$REVERSE_B64\",
-    \"model\": \"advanced\",
+    \"model\": \"standard\",
     \"company\": \"PCGS\"
   }"
 ```
@@ -156,7 +156,7 @@ response = requests.post(
     json={
         "obverse_base64": obverse_b64,
         "reverse_base64": reverse_b64,
-        "model": "advanced",  # or "standard"
+        "model": "standard",  # or "morgans"
         "company": "PCGS"
     }
 )
@@ -208,7 +208,7 @@ fetch(API_URL, {
   "confidence": 87.5,
   "raw_score": 0.8234,
   "company_used": "PCGS",
-  "model_used": "Advanced"
+  "model_used": "Standard (All US Coins)"
 }
 ```
 
@@ -266,7 +266,7 @@ modal app list
 modal volume ls coin-grader-models
 
 # Re-upload if needed
-modal volume put coin-grader-models models/coin_ordinal_best.pth coin_ordinal_best.pth
+modal volume put coin-grader-models models/coin_convnext_best.pth coin_convnext_best.pth
 ```
 
 ### Cold starts too slow

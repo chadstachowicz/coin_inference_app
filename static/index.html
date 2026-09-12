@@ -1266,7 +1266,7 @@
     <!-- Model Select -->
     <div class="company-section">
       <select class="company-select model-select" id="modelSelect">
-        <option value="standard">Standard Model</option>
+        <option value="standard">Standard (All US Coins)</option>
       </select>
     </div>
 
@@ -1281,7 +1281,7 @@
     <div class="results-card" id="resultsCard">
       <div class="grade-result" id="gradeResult">MS64</div>
       <div class="grade-sheldon" id="gradeSheldon">Sheldon Scale: 64</div>
-      <div class="model-used" id="modelUsed">Model: Standard</div>
+      <div class="model-used" id="modelUsed">Model: Standard (All US Coins)</div>
       <div class="confidence-section">
         <div class="confidence-bar">
           <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
@@ -1513,7 +1513,7 @@
             if (model.available) {
               const option = document.createElement('option');
               option.value = model.id;
-              option.textContent = `${model.name} - ${model.description}`;
+              option.textContent = model.name;
               if (model.id === data.default) {
                 option.selected = true;
               }
@@ -1526,7 +1526,7 @@
         if (select.options.length === 0) {
           const option = document.createElement('option');
           option.value = 'standard';
-          option.textContent = 'Standard Model';
+          option.textContent = 'Standard (All US Coins)';
           select.appendChild(option);
         }
       } catch (error) {
@@ -1692,7 +1692,7 @@
         document.getElementById('confidenceText').textContent = `${result.confidence}%`;
         
         // Show which model was used
-        const modelUsed = result.model_used || 'Standard';
+        const modelUsed = result.model_used || 'Standard (All US Coins)';
         document.getElementById('modelUsed').textContent = `Model: ${modelUsed}`;
         
         document.getElementById('resultsCard').classList.add('visible');

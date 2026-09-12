@@ -24,9 +24,8 @@ Test JSON API (with API key):
         -d '{"obverse_base64": "<base64>", "reverse_base64": "<base64>", "model": "standard"}'
 
 Available models:
-    - standard: ResNet-50 backbone (fast)
-    - advanced: ConvNeXt backbone (accurate)
-    - morgans: Morgan Specific
+    - standard: Standard (All US Coins)
+    - morgans: Morgans (Morgan Dollars Only)
 """
 
 import modal
@@ -448,21 +447,15 @@ def get_analytics_stats():
 # Model registry - maps model_type to (model_file, friendly_name, description)
 MODEL_REGISTRY = {
     "standard": {
-        "file": "coin_ordinal_best.pth",
-        "name": "Standard",
-        "description": "ResNet-50 backbone - Fast and reliable",
-        "backbone": "resnet50"
-    },
-    "advanced": {
         "file": "coin_convnext_best.pth",
-        "name": "Advanced",
-        "description": "ConvNeXt backbone - Higher accuracy",
+        "name": "Standard (All US Coins)",
+        "description": "All US Coins",
         "backbone": "convnext_small"
     },
     "morgans": {
         "file": "coin_morgans_best.pth",
-        "name": "Morgan Dollas",
-        "description": "Morgan Specific",
+        "name": "Morgans (Morgan Dollars Only)",
+        "description": "Morgan Dollars Only",
         "backbone": "convnext_small"
     }
 }
@@ -1683,7 +1676,7 @@ class APIPredictRequest(BaseModel):
     """Request model for JSON API prediction endpoint."""
     obverse_base64: str = Field(..., description="Base64-encoded obverse (front) image")
     reverse_base64: str = Field(..., description="Base64-encoded reverse (back) image")
-    model: Optional[str] = Field("standard", description="Model type: 'standard' (ResNet-50) or 'advanced' (ConvNeXt) or 'morgans' (Morgan Specific)")
+    model: Optional[str] = Field("standard", description="Model type: 'standard' (All US Coins) or 'morgans' (Morgan Dollars Only)")
     company: Optional[str] = Field(None, description="Grading company (PCGS, NGC, CACG)")
     save_images: Optional[bool] = Field(True, description="Save images for review")
     
@@ -1716,7 +1709,7 @@ class APIPredictResponse(BaseModel):
                 "confidence": 87.5,
                 "raw_score": 0.8234,
                 "company_used": "PCGS",
-                "model_used": "Standard"
+                "model_used": "Standard (All US Coins)"
             }
         }
 
@@ -1793,16 +1786,15 @@ async def predict(
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
     company: Optional[str] = Form(None),
-    model: Optional[str] = Form(None, description="Model type: 'standard' or 'advanced' or 'morgans'"),
+    model: Optional[str] = Form(None, description="Model type: 'standard' or 'morgans'"),
     async_mode: bool = Form(False, description="Return job_id for polling instead of waiting"),
     save_images: bool = Form(True, description="Save images for review (default True)")
 ):
     """Predict coin grade from uploaded images.
     
     Model options:
-    - 'standard': ResNet-50 backbone (fast and reliable)
-    - 'advanced': ConvNeXt backbone (higher accuracy)
-    - 'morgans': Morgan Specific
+    - 'standard': Standard (All US Coins)
+    - 'morgans': Morgans (Morgan Dollars Only)
     
     If async_mode=True, returns immediately with a job_id that can be polled at /predict/{job_id}.
     If async_mode=False (default), waits for the result (uses async I/O, doesn't block other requests).
@@ -1906,9 +1898,8 @@ Predict coin grade from base64-encoded images using API key authentication.
 Include your API key in the `X-API-Key` header.
 
 ## Models
-- `standard`: ResNet-50 backbone - Fast and reliable
-- `advanced`: ConvNeXt backbone - Higher accuracy
-- `morgans`: Morgan Specific
+- `standard`: Standard (All US Coins)
+- `morgans`: Morgans (Morgan Dollars Only)
 
 ## Example Request
 ```bash
@@ -1940,7 +1931,7 @@ response = requests.post(
     json={
         "obverse_base64": obverse_b64,
         "reverse_base64": reverse_b64,
-        "model": "advanced",  # or "standard" or "morgans"
+        "model": "standard",  # or "morgans"
         "company": "PCGS"
     }
 )
@@ -3028,8 +3019,8 @@ def main():
     print("\nTo run locally:")
     print("  modal serve modal_app.py")
     print("\nTo upload your models:")
-    print("  modal volume put coin-grader-models /path/to/coin_ordinal_best.pth")
     print("  modal volume put coin-grader-models /path/to/coin_convnext_best.pth")
+    print("  modal volume put coin-grader-models /path/to/coin_morgans_best.pth")
     print("\nTo set up API keys (for JSON API access):")
     print("  modal secret create api_keys API_KEY=\"your-secure-api-key\"")
     print("  # For multiple keys: API_KEY=\"key1,key2,key3\"")
