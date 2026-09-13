@@ -1741,13 +1741,13 @@ def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
     import os
     
     # Read credentials from Modal secrets (environment variables)
-    admin_username = os.environ.get("USERNAME", "")
-    admin_password = os.environ.get("PASSWORD", "")
-    
+    admin_username = os.environ.get("ADMIN_USERNAME", "")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "")
+
     if not admin_username or not admin_password:
         raise HTTPException(
             status_code=500,
-            detail="Admin credentials not configured",
+            detail="Admin credentials not configured. Set ADMIN_USERNAME and ADMIN_PASSWORD in Modal secret 'custom-secret'.",
         )
     
     correct_username = secrets.compare_digest(credentials.username, admin_username)
