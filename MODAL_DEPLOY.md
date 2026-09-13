@@ -77,6 +77,9 @@ modal serve modal_app.py
 |----------|--------|------|-------------|
 | `/` | GET | None | Web interface |
 | `/predict` | POST | None | Grade a coin (multipart form) |
+| `/predict/{job_id}` | GET | API Key | Poll an async grade job |
+| `/predict-mintmark` | POST | API Key | Mint mark only (multipart form) |
+| `/predict-strike` | POST | API Key | Strike type only (multipart form) |
 | `/split-combined` | POST | None | Split TrueView image |
 | `/models` | GET | None | List available models |
 | `/companies` | GET | None | List grading companies |

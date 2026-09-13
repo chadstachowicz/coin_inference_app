@@ -1906,7 +1906,7 @@ async def predict(
 
 
 @web_app.get("/predict/{job_id}")
-async def get_prediction_result(job_id: str):
+async def get_prediction_result(job_id: str, api_key: str = Depends(verify_api_key)):
     """Poll for prediction result by job_id.
     
     Returns status: 'processing', 'completed', or 'failed'.
@@ -2527,7 +2527,8 @@ async def predict_mintmark(
     obverse: UploadFile = File(...),
     reverse: UploadFile = File(...),
     year: Optional[int] = Form(None, description="Coin year"),
-    denomination: Optional[str] = Form(None, description="Coin denomination")
+    denomination: Optional[str] = Form(None, description="Coin denomination"),
+    api_key: str = Depends(verify_api_key),
 ):
     """
     Predict mint mark from uploaded coin images.
@@ -2678,7 +2679,8 @@ class APIStrikeTypeResponse(BaseModel):
 async def predict_strike(
     request: Request,
     obverse: UploadFile = File(...),
-    reverse: UploadFile = File(...)
+    reverse: UploadFile = File(...),
+    api_key: str = Depends(verify_api_key),
 ):
     """
     Predict strike type (Proof vs Circulation) from uploaded coin images.
